@@ -175,4 +175,25 @@ impl PlexClient {
             .error_for_status()?;
         Ok(response)
     }
+    pub async fn get_item_all_leaves(
+        &self,
+        server_uri: &str,
+        server_token: &str,
+        rating_key: &str,
+    ) -> Result<ItemList, reqwest::Error> {
+        let response = self
+            .http_client
+            .get(format!(
+                "{}/library/metadata/{}/allLeaves",
+                server_uri, rating_key
+            ))
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", server_token)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let container: ItemMediaContainer = response.json().await?;
+        Ok(container.media_container)
+    }
 }

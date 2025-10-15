@@ -38,7 +38,49 @@ fn sync_item_and_children<'a>(
             return;
         }
         match item.item_type.as_str() {
-            "show" | "season" => {
+            "show" => {
+                let mut children_result = {
+                    let client = client_arc.lock().await;
+                    client
+                        .get_item_children(server_uri, server_token, &item.rating_key)
+                        .await
+                };
+
+                // Fallback logic for miniseries
+                if let Ok(children) = &children_result {
+                    if children.items.is_empty() && item.leaf_count.unwrap_or(0) > 0 {
+                        println!("'{}' has no children via /children but has a leaf_count. Trying /allLeaves fallback.", item.title);
+                        children_result = {
+                            let client = client_arc.lock().await;
+                            client
+                                .get_item_all_leaves(server_uri, server_token, &item.rating_key)
+                                .await
+                        };
+                    }
+                }
+
+                match children_result {
+                    Ok(children) => {
+                        for child_item in &children.items {
+                            sync_item_and_children(
+                                client_arc,
+                                tx,
+                                server_uri,
+                                server_token,
+                                server_id,
+                                library_key,
+                                child_item,
+                                sync_time,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to get children for show '{}': {:?}", item.title, e);
+                    }
+                }
+            }
+            "season" => {
                 let children_result = {
                     let client = client_arc.lock().await;
                     client
@@ -63,7 +105,10 @@ fn sync_item_and_children<'a>(
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to get children for item '{}': {:?}", item.title, e);
+                        eprintln!(
+                            "Failed to get children for season '{}': {:?}",
+                            item.title, e
+                        );
                     }
                 }
             }
