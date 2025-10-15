@@ -1,18 +1,19 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-#[derive(Serialize, Deserialize, Debug)]
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct User {
     #[serde(rename = "authToken")]
     pub auth_token: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LoginResponse {
     pub user: User,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Device {
     pub name: String,
     pub product: String,
@@ -24,24 +25,25 @@ pub struct Device {
     pub connections: Vec<Connection>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Connection {
     pub uri: String,
     pub local: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LibraryMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: LibraryList,
 }
-#[derive(Serialize, Deserialize, Debug)]
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LibraryList {
     #[serde(rename = "Directory")]
     pub libraries: Vec<Library>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Library {
     pub key: String,
     pub title: String,
@@ -49,19 +51,19 @@ pub struct Library {
     pub library_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ItemMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: ItemList,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ItemList {
     #[serde(rename = "Metadata")]
     pub items: Vec<Item>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Item {
     pub guid: Option<String>,
     #[serde(rename = "ratingKey")]
@@ -84,19 +86,19 @@ pub struct Item {
     pub art: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SingleItemMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: SingleItemList,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SingleItemList {
     #[serde(rename = "Metadata")]
     pub items: Vec<ItemWithDetails>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ItemWithDetails {
     pub guid: Option<String>,
     #[serde(rename = "ratingKey")]
@@ -121,21 +123,21 @@ pub struct ItemWithDetails {
     pub art: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Media {
     #[serde(rename = "videoResolution")]
     pub video_resolution: String,
     #[serde(rename = "Part", default)]
     pub parts: Vec<Part>,
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Part {
     pub id: i64,
     #[serde(rename = "Stream", default)]
     pub streams: Vec<Stream>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Stream {
     pub id: i64,
     #[serde(rename = "streamType")]
@@ -145,7 +147,7 @@ pub struct Stream {
     pub format: Option<String>,
 }
 
-#[derive(Serialize, FromRow, Debug)]
+#[derive(Serialize, FromRow, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DbServer {
     pub id: String,
@@ -156,7 +158,7 @@ pub struct DbServer {
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Serialize, FromRow, Debug)]
+#[derive(Serialize, FromRow, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub guid: Option<String>,
@@ -176,13 +178,13 @@ pub struct SearchQuery {
     pub q: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaVersion {
     pub video_resolution: String,
     pub subtitles: Vec<String>,
 }
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerAvailability {
     pub server_id: String,
@@ -191,7 +193,7 @@ pub struct ServerAvailability {
     pub versions: Vec<MediaVersion>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaDetails {
     pub guid: String,
@@ -204,7 +206,7 @@ pub struct MediaDetails {
     pub available_on: Vec<ServerAvailability>,
 }
 
-#[derive(Serialize, FromRow, Debug)]
+#[derive(Serialize, FromRow, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SeasonSummary {
     pub id: String,
@@ -216,7 +218,7 @@ pub struct SeasonSummary {
     pub leaf_count: Option<i32>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EpisodeDetails {
     pub id: String,

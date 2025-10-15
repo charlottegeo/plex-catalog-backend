@@ -8,11 +8,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+mod auth;
 mod db;
 mod error;
 mod models;
 mod plex_client;
 mod routes;
+
+const SYNC_INTERVAL_HOURS: u64 = 12;
+
+const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 
 pub struct AppState {
     pub plex_client: Arc<Mutex<PlexClient>>,
@@ -61,6 +66,11 @@ fn sync_item_and_children<'a>(
                 match children_result {
                     Ok(children) => {
                         for child_item in &children.items {
+                            let mut episode_item = child_item.clone();
+                            if child_item.item_type == "episode" && child_item.parent_id.is_none() {
+                                episode_item.parent_id = Some(item.rating_key.clone());
+                            }
+
                             sync_item_and_children(
                                 client_arc,
                                 tx,
@@ -68,7 +78,7 @@ fn sync_item_and_children<'a>(
                                 server_token,
                                 server_id,
                                 library_key,
-                                child_item,
+                                &episode_item,
                                 sync_time,
                             )
                             .await;
@@ -206,7 +216,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     Ok(library_list) => {
                         println!("Syncing server: {}", server.name);
                         for library in &library_list.libraries {
-                            if library.library_type == "movie" || library.library_type == "show" {
+                            if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
                                 let mut tx = match db_pool.begin().await {
                                     Ok(tx) => tx,
                                     Err(_) => continue,
@@ -309,12 +319,13 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         eprintln!("Failed to prune old data: {:?}", e);
     }
 }
+
 async fn database_sync_scheduler(app_state: web::Data<AppState>) {
     println!("Performing initial database sync on startup...");
     run_database_sync(&app_state).await;
     println!("Initial sync complete. Starting scheduled runs.");
 
-    let mut interval = tokio::time::interval(Duration::from_secs(60 * 60 * 12));
+    let mut interval = tokio::time::interval(Duration::from_secs(60 * 60 * SYNC_INTERVAL_HOURS));
     interval.tick().await;
 
     loop {

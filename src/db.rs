@@ -86,7 +86,6 @@ pub async fn get_library_items(
     .map(|row| {
         use sqlx::Row;
         let id: String = row.try_get("id")?;
-
         Ok(Item {
             guid: row.try_get("guid")?,
             rating_key: id.clone(),

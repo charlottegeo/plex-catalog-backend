@@ -1,10 +1,21 @@
+use crate::auth::CSHAuth;
 use crate::{db, error::ApiError, models::SearchQuery, AppState};
 use actix_web::{get, web, HttpResponse, Responder, Result};
 use futures::StreamExt;
 
+async fn get_server_details_or_404(
+    db_pool: &sqlx::PgPool,
+    server_id: &str,
+) -> Result<crate::models::DbServer, ApiError> {
+    db::get_server_details(db_pool, server_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
+            .wrap(CSHAuth::enabled())
             .service(get_servers_handler)
             .service(get_libraries_handler)
             .service(get_library_items_handler)
@@ -51,9 +62,7 @@ async fn get_item_details_handler(
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
     let client = state.plex_client.lock().await;
-    let server_details = db::get_server_details(&state.db_pool, &server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))?;
+    let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
 
     let item_option = client
         .get_item_details(
@@ -76,9 +85,7 @@ async fn get_item_children_handler(
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
     let client = state.plex_client.lock().await;
-    let server_details = db::get_server_details(&state.db_pool, &server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))?;
+    let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
 
     let children = client
         .get_item_children(
