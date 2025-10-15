@@ -283,7 +283,7 @@ async fn database_sync_scheduler(app_state: web::Data<AppState>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().expect("Failed to read .env file");
+    dotenvy::dotenv().ok();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_pool = PgPoolOptions::new()
@@ -299,7 +299,7 @@ async fn main() -> Result<()> {
     });
     tokio::spawn(database_sync_scheduler(app_state.clone()));
 
-    println!("Backend server starting on http://127.0.0.1:3001");
+    println!("Backend server starting on http://0.0.0.0:3001");
 
     HttpServer::new(move || {
         App::new()
