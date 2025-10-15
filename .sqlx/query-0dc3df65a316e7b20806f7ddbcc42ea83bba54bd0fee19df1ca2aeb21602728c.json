@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM servers WHERE last_seen < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0dc3df65a316e7b20806f7ddbcc42ea83bba54bd0fee19df1ca2aeb21602728c"
+}

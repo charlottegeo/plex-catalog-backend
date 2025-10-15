@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            mp.item_id, \n            mp.video_resolution as \"video_resolution?\", \n            s.language as \"subtitle_language?\"\n        FROM media_parts mp\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE mp.item_id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "item_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "video_resolution?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "subtitle_language?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f3a9d58b3055743e1ca8f72bd32b9a9983b4c0801bab27f8f874073d660dae82"
+}

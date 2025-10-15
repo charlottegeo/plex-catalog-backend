@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT i.id, i.server_id, s.name as \"server_name!\", i.guid as \"guid?\", i.title, i.summary, i.year, i.art_path, i.thumb_path, i.item_type\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE i.guid = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "server_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "server_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "guid?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "year",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "art_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "thumb_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "item_type",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "e5b4bcde6a10ae27fbbe484a6ec78cda572a16f7c96ce1b269834d95ced57c12"
+}

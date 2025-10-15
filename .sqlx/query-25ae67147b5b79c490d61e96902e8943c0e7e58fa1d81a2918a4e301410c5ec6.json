@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO libraries (id, server_id, title, library_type, last_seen)\n        VALUES ($1, $2, $3, $4, $5)\n        -- Use the composite key for the conflict check\n        ON CONFLICT (id, server_id) DO UPDATE SET\n            title = EXCLUDED.title,\n            library_type = EXCLUDED.library_type,\n            last_seen = EXCLUDED.last_seen\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "25ae67147b5b79c490d61e96902e8943c0e7e58fa1d81a2918a4e301410c5ec6"
+}

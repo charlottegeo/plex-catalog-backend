@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
             .app_data(app_state.clone())
             .configure(routes::configure)
     })
-    .bind(("127.0.0.1", 3001))?
+    .bind(("0.0.0.0", 3001))?
     .run()
     .await
 }

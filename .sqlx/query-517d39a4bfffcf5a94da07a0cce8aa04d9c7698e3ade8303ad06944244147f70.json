@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        -- Add server_id to the INSERT statement\n        INSERT INTO media_parts (id, item_id, server_id, video_resolution, last_seen)\n        VALUES ($1, $2, $3, $4, $5)\n        -- Add server_id to the ON CONFLICT clause\n        ON CONFLICT (id, server_id) DO UPDATE SET\n            video_resolution = EXCLUDED.video_resolution,\n            last_seen = EXCLUDED.last_seen\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Varchar",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "517d39a4bfffcf5a94da07a0cce8aa04d9c7698e3ade8303ad06944244147f70"
+}
