@@ -74,7 +74,7 @@ pub async fn get_library_items(
         r#"
         SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count
         FROM items
-        WHERE server_id = $1 AND library_id = $2 AND parent_id IS NULL
+        WHERE server_id = $1 AND library_id = $2 AND item_type IN ('movie', 'show')
         ORDER BY title ASC
         "#,
     )
@@ -473,22 +473,28 @@ pub async fn get_show_seasons(
 
 pub async fn get_season_episodes(
     pool: &PgPool,
-    season_id: &str,
+    parent_id: &str,
     server_id: &str,
 ) -> Result<Vec<EpisodeDetails>, sqlx::Error> {
     let rows = sqlx::query_as!(
         EpisodeWithVersion,
         r#"
+        WITH relevant_parents AS (
+            SELECT id FROM items WHERE id = $1 AND server_id = $2
+            UNION ALL
+            SELECT id FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'
+        )
         SELECT
             e.id, e.title, e.summary, e.thumb_path,
             mp.video_resolution, s.language as "subtitle_language"
         FROM items e
+        JOIN relevant_parents rp ON e.parent_id = rp.id
         LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id
         LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3
-        WHERE e.parent_id = $1 AND e.server_id = $2 AND e.item_type = 'episode'
+        WHERE e.server_id = $2 AND e.item_type = 'episode'
         ORDER BY e.index ASC
         "#,
-        season_id,
+        parent_id,
         server_id
     )
     .fetch_all(pool)
