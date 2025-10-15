@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, title, summary, thumb_path, art_path, leaf_count\n            FROM items\n            WHERE id = $1 AND server_id = $2 AND item_type = 'show' AND leaf_count > 0\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "thumb_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "art_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "leaf_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "51455ee51d8835216d41f48360c83c6d7536e4ea2ed091cc3bda6b96a69f08b8"
+}

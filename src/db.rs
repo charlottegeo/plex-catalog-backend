@@ -74,7 +74,7 @@ pub async fn get_library_items(
         r#"
         SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count
         FROM items
-        WHERE server_id = $1 AND library_id = $2
+        WHERE server_id = $1 AND library_id = $2 AND parent_id IS NULL
         ORDER BY title ASC
         "#,
     )
@@ -434,7 +434,7 @@ pub async fn get_show_seasons(
     show_id: &str,
     server_id: &str,
 ) -> Result<Vec<SeasonSummary>, sqlx::Error> {
-    sqlx::query_as!(
+    let mut seasons = sqlx::query_as!(
         SeasonSummary,
         r#"
         SELECT
@@ -447,7 +447,28 @@ pub async fn get_show_seasons(
         server_id
     )
     .fetch_all(pool)
-    .await
+    .await?;
+    if seasons.is_empty() {
+        let show_as_season = sqlx::query_as!(
+            SeasonSummary,
+            r#"
+            SELECT
+                id, title, summary, thumb_path, art_path, leaf_count
+            FROM items
+            WHERE id = $1 AND server_id = $2 AND item_type = 'show' AND leaf_count > 0
+            "#,
+            show_id,
+            server_id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(show) = show_as_season {
+            seasons.push(show);
+        }
+    }
+
+    Ok(seasons)
 }
 
 pub async fn get_season_episodes(

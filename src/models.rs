@@ -212,6 +212,7 @@ pub struct SeasonSummary {
     pub summary: Option<String>,
     pub thumb_path: Option<String>,
     pub art_path: Option<String>,
+    #[serde(rename = "episodeCount")]
     pub leaf_count: Option<i32>,
 }
 
