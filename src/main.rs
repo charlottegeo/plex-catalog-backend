@@ -46,7 +46,6 @@ fn sync_item_and_children<'a>(
                         .await
                 };
 
-                // Fallback logic for miniseries
                 if let Ok(children) = &children_result {
                     if children.items.is_empty() && item.leaf_count.unwrap_or(0) > 0 {
                         println!("'{}' has no children via /children but has a leaf_count. Trying /allLeaves fallback.", item.title);
