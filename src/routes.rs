@@ -1,4 +1,4 @@
-use crate::{error::ApiError, plex_client::PlexClient, AppState};
+use crate::{db, error::ApiError, models::SearchQuery, AppState};
 use actix_web::{get, web, HttpResponse, Responder, Result};
 use futures::StreamExt;
 
@@ -10,43 +10,17 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_library_items_handler)
             .service(get_item_details_handler)
             .service(get_item_children_handler)
-            .service(get_image_handler),
+            .service(get_image_handler)
+            .service(search_handler)
+            .service(get_media_details_handler)
+            .service(get_seasons_handler)
+            .service(get_episodes_handler),
     );
-}
-
-async fn find_server_info(
-    client: &mut PlexClient,
-    server_id: &str,
-) -> Result<(String, String), ApiError> {
-    let servers = client.get_servers().await?;
-    let target_server = servers
-        .iter()
-        .find(|s| s.client_identifier == server_id)
-        .ok_or_else(|| ApiError::NotFound(format!("Server with ID {} not found", server_id)))?;
-    let connection = target_server
-        .connections
-        .iter()
-        .find(|c| !c.local)
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Server '{}' has no remote connection",
-                target_server.name
-            ))
-        })?;
-    let server_token = target_server.access_token.as_ref().ok_or_else(|| {
-        ApiError::NotFound(format!(
-            "Server '{}' has no access token",
-            target_server.name
-        ))
-    })?;
-    Ok((connection.uri.clone(), server_token.clone()))
 }
 
 #[get("/servers")]
 async fn get_servers_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let servers = client.get_servers().await?;
+    let servers = db::get_all_servers(&state.db_pool).await?;
     Ok(HttpResponse::Ok().json(servers))
 }
 
@@ -56,10 +30,7 @@ async fn get_libraries_handler(
     path: web::Path<String>,
 ) -> Result<impl Responder, ApiError> {
     let server_id = path.into_inner();
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let (uri, token) = find_server_info(&mut client, &server_id).await?;
-    let libraries = client.get_libraries(&uri, &token).await?;
+    let libraries = db::get_server_libraries(&state.db_pool, &server_id).await?;
     Ok(HttpResponse::Ok().json(libraries))
 }
 
@@ -69,10 +40,7 @@ async fn get_library_items_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, library_key) = path.into_inner();
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let (uri, token) = find_server_info(&mut client, &server_id).await?;
-    let items = client.get_library_items(&uri, &token, &library_key).await?;
+    let items = db::get_library_items(&state.db_pool, &server_id, &library_key).await?;
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -82,10 +50,18 @@ async fn get_item_details_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let (uri, token) = find_server_info(&mut client, &server_id).await?;
-    let item_option = client.get_item_details(&uri, &token, &rating_key).await?;
+    let client = state.plex_client.lock().await;
+    let server_details = db::get_server_details(&state.db_pool, &server_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))?;
+
+    let item_option = client
+        .get_item_details(
+            &server_details.connection_uri,
+            &server_details.access_token,
+            &rating_key,
+        )
+        .await?;
 
     match item_option {
         Some(item) => Ok(HttpResponse::Ok().json(item)),
@@ -99,10 +75,19 @@ async fn get_item_children_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let (uri, token) = find_server_info(&mut client, &server_id).await?;
-    let children = client.get_item_children(&uri, &token, &rating_key).await?;
+    let client = state.plex_client.lock().await;
+    let server_details = db::get_server_details(&state.db_pool, &server_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))?;
+
+    let children = client
+        .get_item_children(
+            &server_details.connection_uri,
+            &server_details.access_token,
+            &rating_key,
+        )
+        .await?;
+
     Ok(HttpResponse::Ok().json(children))
 }
 
@@ -112,10 +97,24 @@ async fn get_image_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, image_path) = path.into_inner();
-    let mut client = state.plex_client.lock().await;
-    client.ensure_logged_in().await?;
-    let (uri, token) = find_server_info(&mut client, &server_id).await?;
-    let image_response = client.get_image(&uri, &token, &image_path).await?;
+
+    let server_details = db::get_server_details(&state.db_pool, &server_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Server with ID {} not found in our database",
+                server_id
+            ))
+        })?;
+
+    let client = state.plex_client.lock().await;
+    let image_response = client
+        .get_image(
+            &server_details.connection_uri,
+            &server_details.access_token,
+            &image_path,
+        )
+        .await?;
 
     let content_type = image_response
         .headers()
@@ -131,4 +130,45 @@ async fn get_image_handler(
     Ok(HttpResponse::Ok()
         .content_type(content_type)
         .streaming(body_stream))
+}
+
+#[get("/search")]
+async fn search_handler(
+    state: web::Data<AppState>,
+    query: web::Query<SearchQuery>,
+) -> Result<impl Responder, ApiError> {
+    let search_results = db::search_items(&state.db_pool, &query.q).await?;
+    Ok(HttpResponse::Ok().json(search_results))
+}
+
+#[get("/media/{guid}")]
+async fn get_media_details_handler(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> Result<impl Responder, ApiError> {
+    let guid = path.into_inner();
+    match db::get_details_by_guid(&state.db_pool, &guid).await? {
+        Some(details) => Ok(HttpResponse::Ok().json(details)),
+        None => Err(ApiError::NotFound("Media not found".to_string())),
+    }
+}
+
+#[get("/servers/{server_id}/shows/{show_id}/seasons")]
+async fn get_seasons_handler(
+    state: web::Data<AppState>,
+    path: web::Path<(String, String)>,
+) -> Result<impl Responder, ApiError> {
+    let (server_id, show_id) = path.into_inner();
+    let seasons = db::get_show_seasons(&state.db_pool, &show_id, &server_id).await?;
+    Ok(HttpResponse::Ok().json(seasons))
+}
+
+#[get("/servers/{server_id}/seasons/{season_id}/episodes")]
+async fn get_episodes_handler(
+    state: web::Data<AppState>,
+    path: web::Path<(String, String)>,
+) -> Result<impl Responder, ApiError> {
+    let (server_id, season_id) = path.into_inner();
+    let episodes = db::get_season_episodes(&state.db_pool, &season_id, &server_id).await?;
+    Ok(HttpResponse::Ok().json(episodes))
 }

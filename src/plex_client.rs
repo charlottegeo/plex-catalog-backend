@@ -5,7 +5,6 @@ use crate::models::{
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
 
-
 pub struct PlexClient {
     http_client: Client,
     client_identifier: String,

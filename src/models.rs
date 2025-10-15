@@ -1,5 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
+use sqlx::FromRow;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct User {
     #[serde(rename = "authToken")]
@@ -62,6 +63,13 @@ pub struct ItemList {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Item {
+    pub guid: Option<String>,
+    #[serde(rename = "ratingKey")]
+    pub rating_key: String,
+    #[serde(rename = "parentRatingKey")]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub index: Option<i32>,
     pub title: String,
     pub key: String,
     pub summary: String,
@@ -87,6 +95,13 @@ pub struct SingleItemList {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ItemWithDetails {
+    pub guid: Option<String>,
+    #[serde(rename = "ratingKey")]
+    pub rating_key: String,
+    #[serde(rename = "parentRatingKey")]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub index: Option<i32>,
     pub title: String,
     pub key: String,
     pub summary: String,
@@ -109,15 +124,97 @@ pub struct Media {
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Part {
+    pub id: i64,
     #[serde(rename = "Stream", default)]
     pub streams: Vec<Stream>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Stream {
+    pub id: i64,
     #[serde(rename = "streamType")]
-    pub stream_type: u8, //1=video, 2=audio, 3=subtitle
+    pub stream_type: u8,
     pub language: Option<String>,
-    pub lang_code: Option<String>,
+    pub language_code: Option<String>,
     pub format: Option<String>,
+}
+
+#[derive(Serialize, FromRow, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbServer {
+    pub id: String,
+    pub name: String,
+    pub is_online: bool,
+    pub access_token: String,
+    pub connection_uri: String,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Serialize, FromRow, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub guid: Option<String>,
+    pub title: String,
+    pub summary: Option<String>,
+    pub item_type: String,
+    pub year: Option<i16>,
+    pub thumb_path: Option<String>,
+    pub server_id: String,
+    pub server_name: String,
+    #[serde(skip_serializing)]
+    pub rank: Option<f32>,
+}
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaVersion {
+    pub video_resolution: String,
+    pub subtitles: Vec<String>,
+}
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerAvailability {
+    pub server_id: String,
+    pub server_name: String,
+    pub rating_key: String,
+    pub versions: Vec<MediaVersion>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDetails {
+    pub guid: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub year: Option<i16>,
+    pub art_path: Option<String>,
+    pub thumb_path: Option<String>,
+    pub item_type: String,
+    pub available_on: Vec<ServerAvailability>,
+}
+
+#[derive(Serialize, FromRow, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SeasonSummary {
+    pub id: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub thumb_path: Option<String>,
+    pub art_path: Option<String>,
+    pub episode_count: i64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeDetails {
+    pub id: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub thumb_path: Option<String>,
+    pub versions: Vec<MediaVersion>,
 }
