@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n        ON CONFLICT (id, server_id) DO UPDATE SET\n            title = EXCLUDED.title,\n            summary = EXCLUDED.summary,\n            year = EXCLUDED.year,\n            thumb_path = EXCLUDED.thumb_path,\n            art_path = EXCLUDED.art_path,\n            last_seen = EXCLUDED.last_seen,\n            guid = EXCLUDED.guid,\n            index = EXCLUDED.index,\n            leaf_count = EXCLUDED.leaf_count\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Varchar",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3e1fe567df29084bcd867fc4188bb04303b40b221147e00913a8d6da3a1f013"
+}

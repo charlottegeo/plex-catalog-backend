@@ -70,6 +70,9 @@ pub struct Item {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub index: Option<i32>,
+    #[serde(default)]
+    #[serde(rename = "leafCount")]
+    pub leaf_count: Option<i32>,
     pub title: String,
     pub key: String,
     pub summary: String,
@@ -102,6 +105,9 @@ pub struct ItemWithDetails {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub index: Option<i32>,
+    #[serde(default)]
+    #[serde(rename = "leafCount")]
+    pub leaf_count: Option<i32>,
     pub title: String,
     pub key: String,
     pub summary: String,
@@ -206,7 +212,7 @@ pub struct SeasonSummary {
     pub summary: Option<String>,
     pub thumb_path: Option<String>,
     pub art_path: Option<String>,
-    pub episode_count: i64,
+    pub leaf_count: Option<i32>,
 }
 
 #[derive(Serialize, Debug)]

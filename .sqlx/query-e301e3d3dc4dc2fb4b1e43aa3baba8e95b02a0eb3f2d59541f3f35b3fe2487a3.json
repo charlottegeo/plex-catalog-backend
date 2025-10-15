@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            s.id, s.title, s.summary, s.thumb_path, s.art_path,\n            COUNT(e.id) as \"episode_count!\"\n        FROM items s\n        LEFT JOIN items e ON e.parent_id = s.id AND e.server_id = s.server_id\n        WHERE s.parent_id = $1 AND s.server_id = $2 AND s.item_type = 'season'\n        GROUP BY s.id, s.title, s.summary, s.thumb_path, s.art_path\n        ORDER BY s.title\n        ",
+  "query": "\n        SELECT\n            id, title, summary, thumb_path, art_path, leaf_count\n        FROM items\n        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'\n        ORDER BY \"index\" ASC, title ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,8 @@
       },
       {
         "ordinal": 5,
-        "name": "episode_count!",
-        "type_info": "Int8"
+        "name": "leaf_count",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
@@ -46,8 +46,8 @@
       true,
       true,
       true,
-      null
+      true
     ]
   },
-  "hash": "ddbb3b2638cbdfcd42da988381b225c30388d0dae7489464a1d71ee663632a98"
+  "hash": "e301e3d3dc4dc2fb4b1e43aa3baba8e95b02a0eb3f2d59541f3f35b3fe2487a3"
 }

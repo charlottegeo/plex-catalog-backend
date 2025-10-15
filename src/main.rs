@@ -77,7 +77,7 @@ fn sync_item_and_children<'a>(
 
                 match details_result {
                     Ok(Some(details)) => {
-                        for media in &details.media {
+                        if let Some(media) = details.media.first() {
                             for part in &media.parts {
                                 if let Err(e) = db::upsert_media_part(
                                     tx,
@@ -265,7 +265,6 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         eprintln!("Failed to prune old data: {:?}", e);
     }
 }
-
 async fn database_sync_scheduler(app_state: web::Data<AppState>) {
     println!("Performing initial database sync on startup...");
     run_database_sync(&app_state).await;

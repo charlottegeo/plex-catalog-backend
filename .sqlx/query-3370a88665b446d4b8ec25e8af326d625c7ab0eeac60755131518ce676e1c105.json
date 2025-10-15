@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO libraries (id, server_id, title, library_type, last_seen)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (id, server_id) DO UPDATE SET\n            title = EXCLUDED.title,\n            library_type = EXCLUDED.library_type,\n            last_seen = EXCLUDED.last_seen\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3370a88665b446d4b8ec25e8af326d625c7ab0eeac60755131518ce676e1c105"
+}

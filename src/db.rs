@@ -72,7 +72,7 @@ pub async fn get_library_items(
 ) -> Result<Vec<Item>, sqlx::Error> {
     sqlx::query(
         r#"
-        SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index
+        SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count
         FROM items
         WHERE server_id = $1 AND library_id = $2
         ORDER BY title ASC
@@ -99,6 +99,7 @@ pub async fn get_library_items(
             thumb: row.try_get("thumb_path")?,
             art: row.try_get("art_path")?,
             index: row.try_get("index")?,
+            leaf_count: row.try_get("leaf_count")?,
         })
     })
     .collect()
@@ -125,7 +126,7 @@ pub async fn upsert_server(
             access_token = EXCLUDED.access_token,
             connection_uri = EXCLUDED.connection_uri,
             last_seen = EXCLUDED.last_seen,
-            is_online = EXCLUDED.is_online -- Update the online status as well
+            is_online = EXCLUDED.is_online
         "#,
         server.client_identifier,
         server.name,
@@ -149,7 +150,6 @@ pub async fn upsert_library(
         r#"
         INSERT INTO libraries (id, server_id, title, library_type, last_seen)
         VALUES ($1, $2, $3, $4, $5)
-        -- Use the composite key for the conflict check
         ON CONFLICT (id, server_id) DO UPDATE SET
             title = EXCLUDED.title,
             library_type = EXCLUDED.library_type,
@@ -175,8 +175,8 @@ pub async fn upsert_item(
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"
-        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (id, server_id) DO UPDATE SET
             title = EXCLUDED.title,
             summary = EXCLUDED.summary,
@@ -185,7 +185,8 @@ pub async fn upsert_item(
             art_path = EXCLUDED.art_path,
             last_seen = EXCLUDED.last_seen,
             guid = EXCLUDED.guid,
-            index = EXCLUDED.index
+            index = EXCLUDED.index,
+            leaf_count = EXCLUDED.leaf_count
         "#,
         item.rating_key,
         library_id,
@@ -200,11 +201,13 @@ pub async fn upsert_item(
         sync_time,
         item.guid,
         item.index,
+        item.leaf_count
     )
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
+
 pub async fn upsert_media_part(
     tx: &mut Transaction<'_>,
     part: &Part,
@@ -215,10 +218,8 @@ pub async fn upsert_media_part(
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"
-        -- Add server_id to the INSERT statement
         INSERT INTO media_parts (id, item_id, server_id, video_resolution, last_seen)
         VALUES ($1, $2, $3, $4, $5)
-        -- Add server_id to the ON CONFLICT clause
         ON CONFLICT (id, server_id) DO UPDATE SET
             video_resolution = EXCLUDED.video_resolution,
             last_seen = EXCLUDED.last_seen
@@ -243,7 +244,6 @@ pub async fn upsert_stream(
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         r#"
-        -- Add server_id to the INSERT and ON CONFLICT
         INSERT INTO streams (id, media_part_id, server_id, stream_type, language, language_code, format, last_seen)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id, server_id) DO UPDATE SET
@@ -316,7 +316,7 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
         SearchResult,
         r#"
         SELECT
-            i.guid, -- <-- SELECT guid instead of id
+            i.guid,
             i.title, i.summary, i.item_type, i.year, i.thumb_path,
             s.id as "server_id!",
             s.name as "server_name!",
@@ -438,13 +438,10 @@ pub async fn get_show_seasons(
         SeasonSummary,
         r#"
         SELECT
-            s.id, s.title, s.summary, s.thumb_path, s.art_path,
-            COUNT(e.id) as "episode_count!"
-        FROM items s
-        LEFT JOIN items e ON e.parent_id = s.id AND e.server_id = s.server_id
-        WHERE s.parent_id = $1 AND s.server_id = $2 AND s.item_type = 'season'
-        GROUP BY s.id, s.title, s.summary, s.thumb_path, s.art_path
-        ORDER BY s.title
+            id, title, summary, thumb_path, art_path, leaf_count
+        FROM items
+        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'
+        ORDER BY "index" ASC, title ASC
         "#,
         show_id,
         server_id
