@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH relevant_parents AS (\n            SELECT id FROM items WHERE id = $1 AND server_id = $2\n            UNION ALL\n            SELECT id FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'\n        )\n        SELECT\n            e.id, e.title, e.summary, e.thumb_path,\n            mp.video_resolution, s.language as \"subtitle_language\"\n        FROM items e\n        JOIN relevant_parents rp ON e.parent_id = rp.id\n        LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE e.server_id = $2 AND e.item_type = 'episode'\n        ORDER BY e.index ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "thumb_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "video_resolution",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "subtitle_language",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2b6bef30d6a198465eb15380f254cd53687efb590b5fc9266cb17ff52ed141a4"
+}
