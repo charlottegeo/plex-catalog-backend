@@ -236,6 +236,21 @@ async fn sync_server(
         };
 
         if let Ok(library_list) = libraries_result {
+            if let Ok(mut tx) = db_pool.begin().await {
+                if db::upsert_server(&mut tx, &server, true, sync_start_time)
+                    .await
+                    .is_ok()
+                {
+                    if tx.commit().await.is_err() {
+                        tracing::error!(
+                            "Failed to commit online status for server '{}'",
+                            server.name
+                        );
+                        return;
+                    }
+                }
+            }
+
             tracing::info!("Syncing server: {}", server.name);
             for library in &library_list.libraries {
                 if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
