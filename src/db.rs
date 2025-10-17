@@ -23,7 +23,7 @@ struct ItemByGuid {
 
 #[derive(FromRow)]
 struct VersionDetails {
-    item_id: String,
+    item_id: Option<String>,
     video_resolution: Option<String>,
     subtitle_language: Option<String>,
 }
@@ -371,9 +371,9 @@ pub async fn get_details_by_guid(
     let versions = sqlx::query_as!(
         VersionDetails,
         r#"
-        SELECT 
-            mp.item_id, 
-            mp.video_resolution as "video_resolution?", 
+        SELECT
+            mp.item_id,
+            mp.video_resolution as "video_resolution?",
             s.language as "subtitle_language?"
         FROM media_parts mp
         LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3
@@ -392,7 +392,10 @@ pub async fn get_details_by_guid(
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
 
-        for version in versions.iter().filter(|v| v.item_id == item.id) {
+        for version in versions
+            .iter()
+            .filter(|v| v.item_id.as_ref() == Some(&item.id))
+        {
             if let Some(resolution) = &version.video_resolution {
                 let subtitles = resolution_to_subtitles
                     .entry(resolution.clone())

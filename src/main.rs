@@ -201,7 +201,7 @@ async fn sync_server(
         let max_attempts = 3;
         let mut delay = Duration::from_secs(2);
 
-        let libraries_result: std::result::Result<models::LibraryList, reqwest::Error> = loop {
+        let libraries_result = loop {
             let client = client_arc.lock().await;
             match client.get_libraries(&conn.uri, token).await {
                 Ok(libraries) => break Ok(libraries),
@@ -236,28 +236,26 @@ async fn sync_server(
         };
 
         if let Ok(library_list) = libraries_result {
-            if let Ok(mut tx) = db_pool.begin().await {
-                if db::upsert_server(&mut tx, &server, true, sync_start_time)
-                    .await
-                    .is_ok()
-                {
-                    if tx.commit().await.is_err() {
-                        tracing::error!(
-                            "Failed to commit online status for server '{}'",
-                            server.name
-                        );
-                        return;
-                    }
+            let mut tx = match db_pool.begin().await {
+                Ok(tx) => tx,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to begin transaction for server '{}': {}",
+                        server.name,
+                        e
+                    );
+                    return;
                 }
+            };
+
+            if let Err(e) = db::upsert_server(&mut tx, &server, true, sync_start_time).await {
+                tracing::error!("Failed to mark server '{}' as online: {}", server.name, e);
+                return;
             }
 
             tracing::info!("Syncing server: {}", server.name);
             for library in &library_list.libraries {
                 if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
-                    let mut tx = match db_pool.begin().await {
-                        Ok(tx) => tx,
-                        Err(_) => continue,
-                    };
                     tracing::info!("Syncing library: {}", library.title);
                     if db::upsert_library(
                         &mut tx,
@@ -269,19 +267,6 @@ async fn sync_server(
                     .is_err()
                     {
                         continue;
-                    }
-
-                    if tx.commit().await.is_err() {
-                        tracing::error!(
-                            "FAILED to commit transaction for library '{}'",
-                            library.title
-                        );
-                        continue;
-                    } else {
-                        tracing::info!(
-                            "Successfully committed transaction for library '{}'",
-                            library.title
-                        );
                     }
 
                     let items_result = {
@@ -298,46 +283,33 @@ async fn sync_server(
                             library.title
                         );
 
-                        let server_identifier = server.client_identifier.clone();
-                        let library_key = library.key.clone();
-                        let conn_uri = conn.uri.clone();
-                        let token = token.to_string();
-
-                        stream::iter(item_list.items)
-                            .for_each_concurrent(10, |item| {
-                                let client_arc = client_arc.clone();
-                                let db_pool = db_pool.clone();
-                                let server_identifier = server_identifier.clone();
-                                let library_key = library_key.clone();
-                                let conn_uri = conn_uri.clone();
-                                let token = token.clone();
-
-                                async move {
-                                    let mut tx = match db_pool.begin().await {
-                                        Ok(tx) => tx,
-                                        Err(_) => return,
-                                    };
-                                    sync_item_and_children(
-                                        &client_arc,
-                                        &mut tx,
-                                        &conn_uri,
-                                        &token,
-                                        &server_identifier,
-                                        &library_key,
-                                        &item,
-                                        sync_start_time,
-                                    )
-                                    .await;
-                                    if tx.commit().await.is_err() {
-                                        tracing::error!("Failed to commit item transaction");
-                                    }
-                                }
-                            })
+                        for item in item_list.items {
+                            sync_item_and_children(
+                                &client_arc,
+                                &mut tx,
+                                &conn.uri,
+                                token,
+                                &server.client_identifier,
+                                &library.key,
+                                &item,
+                                sync_start_time,
+                            )
                             .await;
+                        }
                     } else {
                         tracing::error!("FAILED to get items for library '{}'", library.title);
                     }
                 }
+            }
+
+            if let Err(e) = tx.commit().await {
+                tracing::error!(
+                    "Failed to commit transaction for server '{}': {}",
+                    server.name,
+                    e
+                );
+            } else {
+                tracing::info!("Successfully synced server '{}'", server.name);
             }
         }
     } else {
