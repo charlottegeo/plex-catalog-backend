@@ -1,7 +1,6 @@
 use crate::auth::CSHAuth;
 use crate::{db, error::ApiError, models::SearchQuery, AppState};
-use actix_web::{get, web, HttpResponse, Responder, Result};
-use futures::StreamExt;
+use actix_web::{get, http::header, web, HttpResponse, Responder, Result};
 
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
@@ -104,15 +103,18 @@ async fn get_image_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, image_path) = path.into_inner();
+    let cache_key = format!("{}/{}", server_id, image_path);
 
-    let server_details = db::get_server_details(&state.db_pool, &server_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Server with ID {} not found in our database",
-                server_id
-            ))
-        })?;
+    if let Some(image_bytes) = state.image_cache.get(&cache_key).await {
+        return Ok(HttpResponse::Ok()
+            .content_type("image/jpeg")
+            .insert_header(header::CacheControl(vec![header::CacheDirective::MaxAge(
+                3600u32,
+            )]))
+            .body(image_bytes));
+    }
+
+    let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
 
     let client = state.plex_client.lock().await;
     let image_response = client
@@ -130,13 +132,19 @@ async fn get_image_handler(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let body_stream = image_response
-        .bytes_stream()
-        .map(|res| res.map_err(|e| actix_web::error::ErrorInternalServerError(e)));
+    let image_bytes = image_response.bytes().await.map_err(ApiError::from)?;
+
+    state
+        .image_cache
+        .insert(cache_key, image_bytes.clone())
+        .await;
 
     Ok(HttpResponse::Ok()
         .content_type(content_type)
-        .streaming(body_stream))
+        .insert_header(header::CacheControl(vec![header::CacheDirective::MaxAge(
+            3600u32,
+        )]))
+        .body(image_bytes))
 }
 
 #[get("/search")]
