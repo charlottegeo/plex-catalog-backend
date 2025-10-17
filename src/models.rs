@@ -227,3 +227,19 @@ pub struct EpisodeDetails {
     pub thumb_path: Option<String>,
     pub versions: Vec<MediaVersion>,
 }
+
+impl From<DbServer> for Device {
+    fn from(db_server: DbServer) -> Self {
+        Device {
+            name: db_server.name,
+            product: "".to_string(),
+            provides: "server".to_string(),
+            client_identifier: db_server.id,
+            access_token: Some(db_server.access_token),
+            connections: vec![Connection {
+                uri: db_server.connection_uri,
+                local: false,
+            }],
+        }
+    }
+}

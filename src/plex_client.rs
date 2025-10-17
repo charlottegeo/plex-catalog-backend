@@ -203,4 +203,23 @@ impl PlexClient {
         let container: ItemMediaContainer = response.json().await?;
         Ok(container.media_container)
     }
+    pub async fn check_server_health(&self, server: &Device) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let remote_conn = server.connections.iter().find(|c| !c.local);
+        let server_token = server.access_token.as_ref();
+
+        if let (Some(conn), Some(token)) = (remote_conn, server_token) {
+            self.http_client
+                .get(&conn.uri)
+                .header("X-Plex-Token", token)
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok(())
+        } else {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No remote connection or token",
+            )))
+        }
+    }
 }

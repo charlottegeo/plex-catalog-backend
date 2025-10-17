@@ -72,7 +72,7 @@ fn sync_item_and_children<'a>(
                     Ok(children) => {
                         for child_item in &children.items {
                             let mut episode_item = child_item.clone();
-                            if child_item.item_type == "episode" && child_item.parent_id.is_none() {
+                            if child_item.item_type == "episode" {
                                 episode_item.parent_id = Some(item.rating_key.clone());
                             }
 
@@ -328,6 +328,37 @@ async fn sync_server(
     }
 }
 
+async fn server_health_checker(app_state: web::Data<AppState>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5 * 60));
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+        tracing::info!("Running periodic server health check...");
+        let servers = match db::get_all_servers(&app_state.db_pool).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to get servers for health check: {:?}", e);
+                continue;
+            }
+        };
+
+        for server in servers {
+            let client = app_state.plex_client.lock().await;
+            let device = server.into();
+            let is_online = client.check_server_health(&device).await.is_ok();
+
+            if let Ok(mut tx) = app_state.db_pool.begin().await {
+                if db::upsert_server(&mut tx, &device, is_online, chrono::Utc::now())
+                    .await
+                    .is_ok()
+                {
+                    let _ = tx.commit().await;
+                }
+            }
+        }
+    }
+}
 async fn run_database_sync(app_state: &web::Data<AppState>) {
     let sync_start_time = chrono::Utc::now();
     let client_arc = Arc::clone(&app_state.plex_client);
@@ -347,10 +378,41 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     };
 
     if let Ok(servers) = servers_result {
-        tracing::info!("Found {} servers. Starting full sync...", servers.len());
+        tracing::info!("Found {} servers. Starting health checks...", servers.len());
 
-        stream::iter(servers)
-            .for_each_concurrent(10, |server| {
+        let server_statuses = stream::iter(servers)
+            .map(|server| {
+                let client = client_arc.clone();
+                async move {
+                    let is_online = {
+                        let client = client.lock().await;
+                        client.check_server_health(&server).await.is_ok()
+                    };
+                    (server, is_online)
+                }
+            })
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await;
+
+        let (online_servers, offline_servers): (Vec<_>, Vec<_>) = server_statuses
+            .into_iter()
+            .partition(|(_, is_online)| *is_online);
+
+        for (server, _) in offline_servers {
+            if let Ok(mut tx) = db_pool.begin().await {
+                if db::upsert_server(&mut tx, &server, false, sync_start_time)
+                    .await
+                    .is_ok()
+                {
+                    let _ = tx.commit().await;
+                }
+            }
+        }
+
+        tracing::info!("Syncing {} online servers...", online_servers.len());
+        stream::iter(online_servers)
+            .for_each_concurrent(10, |(server, _)| {
                 sync_server(server, client_arc.clone(), db_pool.clone(), sync_start_time)
             })
             .await;
@@ -407,6 +469,7 @@ async fn main() -> Result<()> {
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));
+    tokio::spawn(server_health_checker(app_state.clone()));
 
     tracing::info!("Backend server starting on http://0.0.0.0:3001");
 

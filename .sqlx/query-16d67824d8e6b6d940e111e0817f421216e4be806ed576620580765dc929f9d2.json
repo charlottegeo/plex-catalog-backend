@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM servers ORDER BY name",
+  "query": "SELECT * FROM servers ORDER BY is_online DESC, name",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "136bf925fdc9575a2003d50c68dd34874b57f6ce4035d987680b32ec149df8e8"
+  "hash": "16d67824d8e6b6d940e111e0817f421216e4be806ed576620580765dc929f9d2"
 }
