@@ -209,7 +209,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         tracing::info!("Found {} servers. Starting full sync...", servers.len());
 
         stream::iter(servers)
-            .for_each_concurrent(4, |server| {
+            .for_each_concurrent(10, |server| {
                 let client_arc = client_arc.clone();
                 let db_pool = db_pool.clone();
                 async move {

@@ -527,5 +527,8 @@ pub async fn get_season_episodes(
         }
     }
 
-    Ok(episodes.into_values().collect())
+    let mut sorted_episodes: Vec<EpisodeDetails> = episodes.into_values().collect();
+    sorted_episodes.sort_by_key(|e| e.id.clone());
+
+    Ok(sorted_episodes)
 }
