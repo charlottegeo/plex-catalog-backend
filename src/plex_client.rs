@@ -4,6 +4,7 @@ use crate::models::{
 };
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
+use std::time::Duration;
 
 pub struct PlexClient {
     http_client: Client,
@@ -16,6 +17,7 @@ impl PlexClient {
         let client_identifier = String::from("rust-plex-catalog-backend-uuid");
         let http_client = ClientBuilder::new()
             .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(120)) // Set a global timeout of 120 seconds
             .build()
             .expect("Failed to build reqwest client");
 
