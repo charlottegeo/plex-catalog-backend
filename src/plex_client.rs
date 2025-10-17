@@ -17,7 +17,8 @@ impl PlexClient {
         let client_identifier = String::from("rust-plex-catalog-backend-uuid");
         let http_client = ClientBuilder::new()
             .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(120)) // Set a global timeout of 120 seconds
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build reqwest client");
 
