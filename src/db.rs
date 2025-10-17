@@ -387,25 +387,26 @@ pub async fn get_details_by_guid(
     let mut available_on: Vec<ServerAvailability> = Vec::new();
     for item in &items {
         let mut server_versions: Vec<MediaVersion> = Vec::new();
-        let unique_resolutions: std::collections::HashSet<_> = versions
-            .iter()
-            .filter(|v| v.item_id == item.id && v.video_resolution.is_some())
-            .map(|v| v.video_resolution.as_ref().unwrap())
-            .collect();
-        for resolution in unique_resolutions {
-            let subtitles: Vec<String> = versions
-                .iter()
-                .filter(|v| {
-                    v.item_id == item.id && v.video_resolution.as_deref() == Some(resolution)
-                })
-                .filter_map(|v| v.subtitle_language.clone())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
+        let mut resolution_to_subtitles: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
 
+        for version in versions.iter().filter(|v| v.item_id == item.id) {
+            if let Some(resolution) = &version.video_resolution {
+                let subtitles = resolution_to_subtitles
+                    .entry(resolution.clone())
+                    .or_default();
+                if let Some(subtitle) = &version.subtitle_language {
+                    subtitles.insert(subtitle.clone());
+                }
+            }
+        }
+
+        for (resolution, subtitles) in resolution_to_subtitles {
             server_versions.push(MediaVersion {
-                video_resolution: resolution.to_string(),
-                subtitles,
+                video_resolution: resolution,
+                subtitles: subtitles.into_iter().collect(),
             });
         }
         available_on.push(ServerAvailability {
@@ -492,49 +493,39 @@ pub async fn get_season_episodes(
     )
     .fetch_all(pool)
     .await?;
-    let mut episodes: Vec<EpisodeDetails> = Vec::new();
+    let mut episodes: std::collections::HashMap<String, EpisodeDetails> =
+        std::collections::HashMap::new();
 
     for row in rows {
-        if let Some(last_episode) = episodes.last_mut() {
-            if last_episode.id == row.id {
-                if let Some(resolution) = row.video_resolution {
-                    if let Some(version) = last_episode
-                        .versions
-                        .iter_mut()
-                        .find(|v| v.video_resolution == resolution)
-                    {
-                        if let Some(lang) = row.subtitle_language {
-                            if !version.subtitles.contains(&lang) {
-                                version.subtitles.push(lang);
-                            }
-                        }
-                    } else {
-                        last_episode.versions.push(MediaVersion {
-                            video_resolution: resolution,
-                            subtitles: row.subtitle_language.map_or(vec![], |lang| vec![lang]),
-                        });
-                    }
-                }
-                continue;
-            }
-        }
-        let mut new_episode = EpisodeDetails {
-            id: row.id.clone(),
-            title: row.title.clone(),
-            summary: row.summary.clone(),
-            thumb_path: row.thumb_path.clone(),
-            versions: Vec::new(),
-        };
+        let episode = episodes
+            .entry(row.id.clone())
+            .or_insert_with(|| EpisodeDetails {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                summary: row.summary.clone(),
+                thumb_path: row.thumb_path.clone(),
+                versions: Vec::new(),
+            });
 
         if let Some(resolution) = row.video_resolution {
-            new_episode.versions.push(MediaVersion {
-                video_resolution: resolution,
-                subtitles: row.subtitle_language.map_or(vec![], |lang| vec![lang]),
-            });
+            if let Some(version) = episode
+                .versions
+                .iter_mut()
+                .find(|v| v.video_resolution == resolution)
+            {
+                if let Some(lang) = row.subtitle_language {
+                    if !version.subtitles.contains(&lang) {
+                        version.subtitles.push(lang);
+                    }
+                }
+            } else {
+                episode.versions.push(MediaVersion {
+                    video_resolution: resolution,
+                    subtitles: row.subtitle_language.map_or(vec![], |l| vec![l]),
+                });
+            }
         }
-
-        episodes.push(new_episode);
     }
 
-    Ok(episodes)
+    Ok(episodes.into_values().collect())
 }

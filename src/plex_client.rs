@@ -169,7 +169,7 @@ impl PlexClient {
         let response = self
             .http_client
             .get(full_image_url)
-            .query(&[("X-Plex-Token", server_token)])
+            .header("X-Plex-Token", server_token)
             .send()
             .await?
             .error_for_status()?;

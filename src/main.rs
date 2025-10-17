@@ -344,7 +344,7 @@ async fn main() -> Result<()> {
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres.");
-    println!("Successfully connected to the database.");
+    println!("Successfully connected to database.");
 
     let plex_client = Arc::new(Mutex::new(PlexClient::new()));
     let app_state = web::Data::new(AppState {
