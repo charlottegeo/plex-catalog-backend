@@ -187,6 +187,160 @@ fn sync_item_and_children<'a>(
     })
 }
 
+async fn sync_server(
+    server: models::Device,
+    client_arc: Arc<Mutex<PlexClient>>,
+    db_pool: sqlx::PgPool,
+    sync_start_time: chrono::DateTime<chrono::Utc>,
+) {
+    let remote_conn = server.connections.iter().find(|c| !c.local);
+    let server_token = server.access_token.as_ref();
+
+    if let (Some(conn), Some(token)) = (remote_conn, server_token) {
+        let mut attempts = 0;
+        let max_attempts = 3;
+        let mut delay = Duration::from_secs(2);
+
+        let libraries_result: std::result::Result<models::LibraryList, reqwest::Error> = loop {
+            let client = client_arc.lock().await;
+            match client.get_libraries(&conn.uri, token).await {
+                Ok(libraries) => break Ok(libraries),
+                Err(e) => {
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        tracing::error!(
+                            "Server '{}' is offline after {} attempts. Marking as such. Error: {:?}",
+                            server.name,
+                            max_attempts,
+                            e
+                        );
+                        if let Ok(mut tx) = db_pool.begin().await {
+                            if db::upsert_server(&mut tx, &server, false, sync_start_time)
+                                .await
+                                .is_ok()
+                            {
+                                let _ = tx.commit().await;
+                            }
+                        }
+                        break Err(e);
+                    }
+                    tracing::warn!(
+                        "Failed to connect to server '{}'. Retrying in {:?}...",
+                        server.name,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        };
+
+        if let Ok(library_list) = libraries_result {
+            tracing::info!("Syncing server: {}", server.name);
+            for library in &library_list.libraries {
+                if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
+                    let mut tx = match db_pool.begin().await {
+                        Ok(tx) => tx,
+                        Err(_) => continue,
+                    };
+                    tracing::info!("Syncing library: {}", library.title);
+                    if db::upsert_library(
+                        &mut tx,
+                        library,
+                        &server.client_identifier,
+                        sync_start_time,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        continue;
+                    }
+
+                    if tx.commit().await.is_err() {
+                        tracing::error!(
+                            "FAILED to commit transaction for library '{}'",
+                            library.title
+                        );
+                        continue;
+                    } else {
+                        tracing::info!(
+                            "Successfully committed transaction for library '{}'",
+                            library.title
+                        );
+                    }
+
+                    let items_result = {
+                        let client = client_arc.lock().await;
+                        client
+                            .get_library_items(&conn.uri, token, &library.key)
+                            .await
+                    };
+
+                    if let Ok(item_list) = items_result {
+                        tracing::info!(
+                            "Found {} items in library '{}'",
+                            item_list.items.len(),
+                            library.title
+                        );
+
+                        let server_identifier = server.client_identifier.clone();
+                        let library_key = library.key.clone();
+                        let conn_uri = conn.uri.clone();
+                        let token = token.to_string();
+
+                        stream::iter(item_list.items)
+                            .for_each_concurrent(10, |item| {
+                                let client_arc = client_arc.clone();
+                                let db_pool = db_pool.clone();
+                                let server_identifier = server_identifier.clone();
+                                let library_key = library_key.clone();
+                                let conn_uri = conn_uri.clone();
+                                let token = token.clone();
+
+                                async move {
+                                    let mut tx = match db_pool.begin().await {
+                                        Ok(tx) => tx,
+                                        Err(_) => return,
+                                    };
+                                    sync_item_and_children(
+                                        &client_arc,
+                                        &mut tx,
+                                        &conn_uri,
+                                        &token,
+                                        &server_identifier,
+                                        &library_key,
+                                        &item,
+                                        sync_start_time,
+                                    )
+                                    .await;
+                                    if tx.commit().await.is_err() {
+                                        tracing::error!("Failed to commit item transaction");
+                                    }
+                                }
+                            })
+                            .await;
+                    } else {
+                        tracing::error!("FAILED to get items for library '{}'", library.title);
+                    }
+                }
+            }
+        }
+    } else {
+        tracing::warn!(
+            "Skipping server '{}' (no remote connection or token).",
+            server.name
+        );
+        if let Ok(mut tx) = db_pool.begin().await {
+            if db::upsert_server(&mut tx, &server, false, sync_start_time)
+                .await
+                .is_ok()
+            {
+                let _ = tx.commit().await;
+            }
+        }
+    }
+}
+
 async fn run_database_sync(app_state: &web::Data<AppState>) {
     let sync_start_time = chrono::Utc::now();
     let client_arc = Arc::clone(&app_state.plex_client);
@@ -210,156 +364,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
         stream::iter(servers)
             .for_each_concurrent(10, |server| {
-                let client_arc = client_arc.clone();
-                let db_pool = db_pool.clone();
-                let server = server.clone(); // Clone the server object
-                async move {
-                    let remote_conn = server.connections.iter().find(|c| !c.local);
-                    let server_token = server.access_token.as_ref();
-
-                    if let (Some(conn), Some(token)) = (remote_conn, server_token) {
-                        if let Ok(mut tx) = db_pool.begin().await {
-                            if db::upsert_server(&mut tx, &server, true, sync_start_time)
-                                .await
-                                .is_err()
-                            {
-                                let _ = tx.rollback().await;
-                                return;
-                            }
-                            let _ = tx.commit().await;
-                        } else {
-                            return;
-                        }
-
-                        let libraries_result = {
-                            let client = client_arc.lock().await;
-                            client.get_libraries(&conn.uri, token).await
-                        };
-
-                        match libraries_result {
-                            Ok(library_list) => {
-                                tracing::info!("Syncing server: {}", server.name);
-                                for library in &library_list.libraries {
-                                    if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
-                                        let mut tx = match db_pool.begin().await {
-                                            Ok(tx) => tx,
-                                            Err(_) => continue,
-                                        };
-                                        tracing::info!("Syncing library: {}", library.title);
-                                        if db::upsert_library(
-                                            &mut tx,
-                                            library,
-                                            &server.client_identifier,
-                                            sync_start_time,
-                                        )
-                                        .await
-                                        .is_err()
-                                        {
-                                            continue;
-                                        }
-
-                                        if tx.commit().await.is_err() {
-                                            tracing::error!(
-                                                "FAILED to commit transaction for library '{}'",
-                                                library.title
-                                            );
-                                            continue;
-                                        } else {
-                                            tracing::info!(
-                                                "Successfully committed transaction for library '{}'",
-                                                library.title
-                                            );
-                                        }
-
-                                        let items_result = {
-                                            let client = client_arc.lock().await;
-                                            client
-                                                .get_library_items(&conn.uri, token, &library.key)
-                                                .await
-                                        };
-
-                                        if let Ok(item_list) = items_result {
-                                            tracing::info!(
-                                                "Found {} items in library '{}'",
-                                                item_list.items.len(),
-                                                library.title
-                                            );
-
-                                            let server_identifier = server.client_identifier.clone();
-                                            let library_key = library.key.clone();
-                                            let conn_uri = conn.uri.clone();
-                                            let token = token.to_string();
-
-                                            stream::iter(item_list.items)
-                                                .for_each_concurrent(10, |item| {
-                                                    let client_arc = client_arc.clone();
-                                                    let db_pool = db_pool.clone();
-                                                    let server_identifier = server_identifier.clone();
-                                                    let library_key = library_key.clone();
-                                                    let conn_uri = conn_uri.clone();
-                                                    let token = token.clone();
-
-                                                    async move {
-                                                        let mut tx = match db_pool.begin().await {
-                                                            Ok(tx) => tx,
-                                                            Err(_) => return,
-                                                        };
-                                                        sync_item_and_children(
-                                                            &client_arc,
-                                                            &mut tx,
-                                                            &conn_uri,
-                                                            &token,
-                                                            &server_identifier,
-                                                            &library_key,
-                                                            &item,
-                                                            sync_start_time,
-                                                        )
-                                                        .await;
-                                                        if tx.commit().await.is_err() {
-                                                            tracing::error!("Failed to commit item transaction");
-                                                        }
-                                                    }
-                                                })
-                                                .await;
-                                        } else {
-                                            tracing::error!(
-                                                "FAILED to get items for library '{}'",
-                                                library.title
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Server '{}' is offline. Marking as such. Error: {:?}",
-                                    server.name, e
-                                );
-                                if let Ok(mut tx) = db_pool.begin().await {
-                                    if db::upsert_server(&mut tx, &server, false, sync_start_time)
-                                        .await
-                                        .is_ok()
-                                    {
-                                        let _ = tx.commit().await;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "Skipping server '{}' (no remote connection or token).",
-                            server.name
-                        );
-                        if let Ok(mut tx) = db_pool.begin().await {
-                            if db::upsert_server(&mut tx, &server, false, sync_start_time)
-                                .await
-                                .is_ok()
-                            {
-                                let _ = tx.commit().await;
-                            }
-                        }
-                    }
-                }
+                sync_server(server, client_arc.clone(), db_pool.clone(), sync_start_time)
             })
             .await;
     } else {
