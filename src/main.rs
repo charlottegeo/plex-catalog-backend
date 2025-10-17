@@ -258,6 +258,19 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                             continue;
                                         }
 
+                                        if tx.commit().await.is_err() {
+                                            tracing::error!(
+                                                "FAILED to commit transaction for library '{}'",
+                                                library.title
+                                            );
+                                            continue;
+                                        } else {
+                                            tracing::info!(
+                                                "Successfully committed transaction for library '{}'",
+                                                library.title
+                                            );
+                                        }
+
                                         let items_result = {
                                             let client = client_arc.lock().await;
                                             client
@@ -274,6 +287,8 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
                                             let server_identifier = server.client_identifier.clone();
                                             let library_key = library.key.clone();
+                                            let conn_uri = conn.uri.clone();
+                                            let token = token.to_string();
 
                                             stream::iter(item_list.items)
                                                 .for_each_concurrent(10, |item| {
@@ -281,8 +296,8 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                                     let db_pool = db_pool.clone();
                                                     let server_identifier = server_identifier.clone();
                                                     let library_key = library_key.clone();
-                                                    let conn_uri = conn.uri.clone();
-                                                    let token = token.to_string();
+                                                    let conn_uri = conn_uri.clone();
+                                                    let token = token.clone();
 
                                                     async move {
                                                         let mut tx = match db_pool.begin().await {
@@ -309,17 +324,6 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                         } else {
                                             tracing::error!(
                                                 "FAILED to get items for library '{}'",
-                                                library.title
-                                            );
-                                        }
-                                        if tx.commit().await.is_err() {
-                                            tracing::error!(
-                                                "FAILED to commit transaction for library '{}'",
-                                                library.title
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                "Successfully committed transaction for library '{}'",
                                                 library.title
                                             );
                                         }
