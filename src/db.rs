@@ -448,6 +448,7 @@ pub async fn get_show_seasons(
     )
     .fetch_all(pool)
     .await?;
+
     if seasons.is_empty() {
         let show_as_season = sqlx::query_as!(
             SeasonSummary,
@@ -473,7 +474,7 @@ pub async fn get_show_seasons(
 
 pub async fn get_season_episodes(
     pool: &PgPool,
-    parent_id: &str,
+    season_id: &str,
     server_id: &str,
 ) -> Result<Vec<EpisodeDetails>, sqlx::Error> {
     let rows = sqlx::query_as!(
@@ -485,10 +486,10 @@ pub async fn get_season_episodes(
         FROM items e
         LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id
         LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3
-        WHERE e.parent_id = $1 AND e.server_id = $2 AND e.item_type = 'episode'
+        WHERE (e.parent_id = $1 OR e.id = $1) AND e.server_id = $2 AND e.item_type = 'episode'
         ORDER BY e.index ASC
         "#,
-        parent_id,
+        season_id,
         server_id
     )
     .fetch_all(pool)

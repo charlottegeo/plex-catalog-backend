@@ -212,6 +212,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
             .for_each_concurrent(10, |server| {
                 let client_arc = client_arc.clone();
                 let db_pool = db_pool.clone();
+                let server = server.clone(); // Clone the server object
                 async move {
                     let remote_conn = server.connections.iter().find(|c| !c.local);
                     let server_token = server.access_token.as_ref();
@@ -270,19 +271,41 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                                 item_list.items.len(),
                                                 library.title
                                             );
-                                            for item in &item_list.items {
-                                                sync_item_and_children(
-                                                    &client_arc,
-                                                    &mut tx,
-                                                    &conn.uri,
-                                                    token,
-                                                    &server.client_identifier,
-                                                    &library.key,
-                                                    item,
-                                                    sync_start_time,
-                                                )
+
+                                            let server_identifier = server.client_identifier.clone();
+                                            let library_key = library.key.clone();
+
+                                            stream::iter(item_list.items)
+                                                .for_each_concurrent(10, |item| {
+                                                    let client_arc = client_arc.clone();
+                                                    let db_pool = db_pool.clone();
+                                                    let server_identifier = server_identifier.clone();
+                                                    let library_key = library_key.clone();
+                                                    let conn_uri = conn.uri.clone();
+                                                    let token = token.to_string();
+
+                                                    async move {
+                                                        let mut tx = match db_pool.begin().await {
+                                                            Ok(tx) => tx,
+                                                            Err(_) => return,
+                                                        };
+                                                        sync_item_and_children(
+                                                            &client_arc,
+                                                            &mut tx,
+                                                            &conn_uri,
+                                                            &token,
+                                                            &server_identifier,
+                                                            &library_key,
+                                                            &item,
+                                                            sync_start_time,
+                                                        )
+                                                        .await;
+                                                        if tx.commit().await.is_err() {
+                                                            tracing::error!("Failed to commit item transaction");
+                                                        }
+                                                    }
+                                                })
                                                 .await;
-                                            }
                                         } else {
                                             tracing::error!(
                                                 "FAILED to get items for library '{}'",
