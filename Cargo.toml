@@ -9,6 +9,7 @@ anyhow = "1.0.86"
 base64 = "0.22.1"
 chrono = {version = "0.4.42", features = ["serde"]}
 dotenvy = "0.15"
+env_logger = "0.11.8"
 futures = "0.3.31"
 isahc = {version = "1.7.2", features = ["json"]}
 lazy_static = "1.5.0"

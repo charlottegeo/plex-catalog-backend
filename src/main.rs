@@ -36,7 +36,7 @@ fn sync_item_and_children<'a>(
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
         if let Err(e) = db::upsert_item(tx, item, library_key, server_id, sync_time).await {
-            eprintln!(
+            log::error!(
                 "Failed to upsert item '{}': {:?}. Skipping its children.",
                 item.title, e
             );
@@ -53,7 +53,7 @@ fn sync_item_and_children<'a>(
 
                 if let Ok(children) = &children_result {
                     if children.items.is_empty() && item.leaf_count.unwrap_or(0) > 0 {
-                        println!("'{}' has no children via /children but has a leaf_count. Trying /allLeaves fallback.", item.title);
+                        log::info!("'{}' has no children via /children but has a leaf_count. Trying /allLeaves fallback.", item.title);
                         children_result = {
                             let client = client_arc.lock().await;
                             client
@@ -85,7 +85,7 @@ fn sync_item_and_children<'a>(
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to get children for show '{}': {:?}", item.title, e);
+                        log::error!("Failed to get children for show '{}': {:?}", item.title, e);
                     }
                 }
             }
@@ -114,7 +114,7 @@ fn sync_item_and_children<'a>(
                         }
                     }
                     Err(e) => {
-                        eprintln!(
+                        log::error!(
                             "Failed to get children for season '{}': {:?}",
                             item.title, e
                         );
@@ -132,7 +132,7 @@ fn sync_item_and_children<'a>(
                 match details_result {
                     Ok(Some(details)) => {
                         if let Some(media) = details.media.first() {
-                            for part in &media.parts {
+                            if let Some(part) = media.parts.first() {
                                 if let Err(e) = db::upsert_media_part(
                                     tx,
                                     part,
@@ -143,29 +143,28 @@ fn sync_item_and_children<'a>(
                                 )
                                 .await
                                 {
-                                    eprintln!(
+                                    log::error!(
                                         "Failed to upsert media part for item '{}': {:?}",
                                         item.title, e
                                     );
-                                    continue;
-                                }
-                                for stream in &part.streams {
-                                    if let Err(e) =
-                                        db::upsert_stream(tx, stream, part.id, server_id, sync_time)
-                                            .await
-                                    {
-                                        eprintln!(
-                                            "Failed to upsert stream for item '{}': {:?}",
-                                            item.title, e
-                                        );
-                                        continue;
+                                } else {
+                                    for stream in &part.streams {
+                                        if let Err(e) =
+                                            db::upsert_stream(tx, stream, part.id, server_id, sync_time)
+                                                .await
+                                        {
+                                            log::error!(
+                                                "Failed to upsert stream for item '{}': {:?}",
+                                                item.title, e
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    Ok(None) => eprintln!("No details found for item '{}'", item.title),
-                    Err(e) => eprintln!("Failed to get details for item '{}': {:?}", item.title, e),
+                    Ok(None) => log::warn!("No details found for item '{}'", item.title),
+                    Err(e) => log::error!("Failed to get details for item '{}': {:?}", item.title, e),
                 }
             }
             _ => {}
@@ -180,7 +179,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     {
         let mut client = client_arc.lock().await;
         if let Err(e) = client.ensure_logged_in().await {
-            eprintln!("Failed to log in to Plex: {:?}", e);
+            log::error!("Failed to log in to Plex: {:?}", e);
             return;
         }
     }
@@ -189,7 +188,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         client.get_servers().await
     };
     if let Ok(servers) = servers_result {
-        println!("Found {} servers. Starting full sync...", servers.len());
+        log::info!("Found {} servers. Starting full sync...", servers.len());
         for server in &servers {
             let remote_conn = server.connections.iter().find(|c| !c.local);
             let server_token = server.access_token.as_ref();
@@ -214,14 +213,14 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                 };
                 match libraries_result {
                     Ok(library_list) => {
-                        println!("Syncing server: {}", server.name);
+                        log::info!("Syncing server: {}", server.name);
                         for library in &library_list.libraries {
                             if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
                                 let mut tx = match db_pool.begin().await {
                                     Ok(tx) => tx,
                                     Err(_) => continue,
                                 };
-                                println!("Syncing library: {}", library.title);
+                                log::info!("Syncing library: {}", library.title);
                                 if db::upsert_library(
                                     &mut tx,
                                     library,
@@ -242,7 +241,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                 };
 
                                 if let Ok(item_list) = items_result {
-                                    println!(
+                                    log::info!(
                                         "Found {} items in library '{}'",
                                         item_list.items.len(),
                                         library.title
@@ -261,18 +260,18 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                                         .await;
                                     }
                                 } else {
-                                    eprintln!(
+                                    log::error!(
                                         "FAILED to get items for library '{}'",
                                         library.title
                                     );
                                 }
                                 if tx.commit().await.is_err() {
-                                    eprintln!(
+                                    log::error!(
                                         "FAILED to commit transaction for library '{}'",
                                         library.title
                                     );
                                 } else {
-                                    println!(
+                                    log::info!(
                                         "Successfully committed transaction for library '{}'",
                                         library.title
                                     );
@@ -281,7 +280,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                         }
                     }
                     Err(e) => {
-                        eprintln!(
+                        log::error!(
                             "Server '{}' is offline. Marking as such. Error: {:?}",
                             server.name, e
                         );
@@ -296,7 +295,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     }
                 }
             } else {
-                println!(
+                log::warn!(
                     "Skipping server '{}' (no remote connection or token).",
                     server.name
                 );
@@ -311,26 +310,26 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
             }
         }
     } else {
-        eprintln!("Failed to get initial server list.");
+        log::error!("Failed to get initial server list.");
     }
 
-    println!("Sync loop finished. Pruning old data...");
+    log::info!("Sync loop finished. Pruning old data...");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
-        eprintln!("Failed to prune old data: {:?}", e);
+        log::error!("Failed to prune old data: {:?}", e);
     }
 }
 
 async fn database_sync_scheduler(app_state: web::Data<AppState>) {
-    println!("Performing initial database sync on startup...");
+    log::info!("Performing initial database sync on startup...");
     run_database_sync(&app_state).await;
-    println!("Initial sync complete. Starting scheduled runs.");
+    log::info!("Initial sync complete. Starting scheduled runs.");
 
     let mut interval = tokio::time::interval(Duration::from_secs(60 * 60 * SYNC_INTERVAL_HOURS));
     interval.tick().await;
 
     loop {
         interval.tick().await;
-        println!("Starting scheduled database sync...");
+        log::info!("Starting scheduled database sync...");
         run_database_sync(&app_state).await;
     }
 }
@@ -338,13 +337,14 @@ async fn database_sync_scheduler(app_state: web::Data<AppState>) {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
+    env_logger::init();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_pool = PgPoolOptions::new()
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres.");
-    println!("Successfully connected to database.");
+    log::info!("Successfully connected to database.");
 
     let plex_client = Arc::new(Mutex::new(PlexClient::new()));
     let app_state = web::Data::new(AppState {
@@ -353,7 +353,7 @@ async fn main() -> Result<()> {
     });
     tokio::spawn(database_sync_scheduler(app_state.clone()));
 
-    println!("Backend server starting on http://0.0.0.0:3001");
+    log::info!("Backend server starting on http://0.0.0.0:3001");
 
     HttpServer::new(move || {
         App::new()

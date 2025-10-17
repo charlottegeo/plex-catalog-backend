@@ -159,22 +159,22 @@ impl PlexClient {
         Ok(container.media_container)
     }
 
-    pub async fn get_image(
-        &self,
-        server_uri: &str,
-        server_token: &str,
-        image_path: &str,
-    ) -> Result<Response, reqwest::Error> {
-        let full_image_url = format!("{}/{}", server_uri, image_path);
-        let response = self
-            .http_client
-            .get(full_image_url)
-            .header("X-Plex-Token", server_token)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(response)
-    }
+pub async fn get_image(
+    &self,
+    server_uri: &str,
+    server_token: &str,
+    image_path: &str,
+) -> Result<Response, reqwest::Error> {
+    let full_image_url = format!("{}/{}", server_uri.trim_end_matches('/'), image_path.trim_start_matches('/'));
+    let response = self
+        .http_client
+        .get(full_image_url)
+        .header("X-Plex-Token", server_token)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(response)
+}
     pub async fn get_item_all_leaves(
         &self,
         server_uri: &str,
