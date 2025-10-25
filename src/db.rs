@@ -5,8 +5,6 @@ use crate::models::{
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 
-type Transaction<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
-
 #[derive(FromRow)]
 struct ItemByGuid {
     id: String,
@@ -107,7 +105,7 @@ pub async fn get_library_items(
     .collect()
 }
 pub async fn upsert_server(
-    tx: &mut Transaction<'_>,
+    pool: &PgPool,
     server: &Device,
     is_online: bool,
     sync_time: DateTime<Utc>,
@@ -137,13 +135,13 @@ pub async fn upsert_server(
         sync_time,
         is_online
     )
-    .execute(&mut **tx)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn upsert_library(
-    tx: &mut Transaction<'_>,
+    pool: &PgPool,
     library: &Library,
     server_id: &str,
     sync_time: DateTime<Utc>,
@@ -163,13 +161,13 @@ pub async fn upsert_library(
         library.library_type,
         sync_time
     )
-    .execute(&mut **tx)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn upsert_item(
-    tx: &mut Transaction<'_>,
+    pool: &PgPool,
     item: &Item,
     library_id: &str,
     server_id: &str,
@@ -205,13 +203,13 @@ pub async fn upsert_item(
         item.index,
         item.leaf_count
     )
-    .execute(&mut **tx)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn upsert_media_part(
-    tx: &mut Transaction<'_>,
+    pool: &PgPool,
     part: &Part,
     item_id: &str,
     server_id: &str,
@@ -232,13 +230,13 @@ pub async fn upsert_media_part(
         media.video_resolution,
         sync_time
     )
-    .execute(&mut **tx)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
 pub async fn upsert_stream(
-    tx: &mut Transaction<'_>,
+    pool: &PgPool,
     stream: &Stream,
     part_id: i64,
     server_id: &str,
@@ -263,7 +261,7 @@ pub async fn upsert_stream(
         stream.format,
         sync_time
     )
-    .execute(&mut **tx).await?;
+    .execute(pool).await?;
     Ok(())
 }
 

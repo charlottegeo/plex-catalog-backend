@@ -35,7 +35,7 @@ pub struct AppState {
 //Recursively sync a library item and its children into database
 fn sync_item_and_children<'a>(
     client_arc: &'a Arc<Mutex<PlexClient>>,
-    tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+    db_pool: &'a sqlx::PgPool,
     server_uri: &'a str,
     server_token: &'a str,
     server_id: &'a str,
@@ -44,7 +44,7 @@ fn sync_item_and_children<'a>(
     sync_time: chrono::DateTime<chrono::Utc>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
-        if let Err(e) = db::upsert_item(tx, item, library_key, server_id, sync_time).await {
+        if let Err(e) = db::upsert_item(db_pool, item, library_key, server_id, sync_time).await {
             tracing::error!(
                 "Failed to upsert item '{}': {:?}. Skipping its children.",
                 item.title,
@@ -83,7 +83,7 @@ fn sync_item_and_children<'a>(
 
                             sync_item_and_children(
                                 client_arc,
-                                tx,
+                                db_pool,
                                 server_uri,
                                 server_token,
                                 server_id,
@@ -116,7 +116,7 @@ fn sync_item_and_children<'a>(
                         for child_item in &children.items {
                             sync_item_and_children(
                                 client_arc,
-                                tx,
+                                db_pool,
                                 server_uri,
                                 server_token,
                                 server_id,
@@ -149,7 +149,7 @@ fn sync_item_and_children<'a>(
                         if let Some(media) = details.media.first() {
                             if let Some(part) = media.parts.first() {
                                 if let Err(e) = db::upsert_media_part(
-                                    tx,
+                                    db_pool,
                                     part,
                                     &item.rating_key,
                                     server_id,
@@ -166,7 +166,7 @@ fn sync_item_and_children<'a>(
                                 } else {
                                     for stream in &part.streams {
                                         if let Err(e) = db::upsert_stream(
-                                            tx, stream, part.id, server_id, sync_time,
+                                            db_pool, stream, part.id, server_id, sync_time,
                                         )
                                         .await
                                         {
@@ -219,13 +219,11 @@ async fn sync_server(
                             max_attempts,
                             e
                         );
-                        if let Ok(mut tx) = db_pool.begin().await {
-                            if db::upsert_server(&mut tx, &server, false, sync_start_time)
-                                .await
-                                .is_ok()
-                            {
-                                let _ = tx.commit().await;
-                            }
+                        if db::upsert_server(&db_pool, &server, false, sync_start_time)
+                            .await
+                            .is_err()
+                        {
+                            tracing::error!("Failed to mark server '{}' as offline.", server.name);
                         }
                         break Err(e);
                     }
@@ -241,19 +239,7 @@ async fn sync_server(
         };
 
         if let Ok(library_list) = libraries_result {
-            let mut tx = match db_pool.begin().await {
-                Ok(tx) => tx,
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to begin transaction for server '{}': {}",
-                        server.name,
-                        e
-                    );
-                    return;
-                }
-            };
-
-            if let Err(e) = db::upsert_server(&mut tx, &server, true, sync_start_time).await {
+            if let Err(e) = db::upsert_server(&db_pool, &server, true, sync_start_time).await {
                 tracing::error!("Failed to mark server '{}' as online: {}", server.name, e);
                 return;
             }
@@ -263,7 +249,7 @@ async fn sync_server(
                 if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
                     tracing::info!("Syncing library: {}", library.title);
                     if db::upsert_library(
-                        &mut tx,
+                        &db_pool,
                         library,
                         &server.client_identifier,
                         sync_start_time,
@@ -271,6 +257,7 @@ async fn sync_server(
                     .await
                     .is_err()
                     {
+                        tracing::error!("Failed to upsert library '{}'", library.title);
                         continue;
                     }
 
@@ -288,47 +275,46 @@ async fn sync_server(
                             library.title
                         );
 
-                        for item in item_list.items {
-                            sync_item_and_children(
-                                &client_arc,
-                                &mut tx,
-                                &conn.uri,
-                                token,
-                                &server.client_identifier,
-                                &library.key,
-                                &item,
-                                sync_start_time,
-                            )
+                        stream::iter(item_list.items)
+                            .for_each_concurrent(10, |item| {
+                                let client_arc_clone = client_arc.clone();
+                                let db_pool_clone = db_pool.clone();
+                                let server_id_clone = server.client_identifier.clone();
+                                let library_key_clone = library.key.clone();
+
+                                async move {
+                                    sync_item_and_children(
+                                        &client_arc_clone,
+                                        &db_pool_clone,
+                                        &conn.uri,
+                                        token,
+                                        &server_id_clone,
+                                        &library_key_clone,
+                                        &item,
+                                        sync_start_time,
+                                    )
+                                    .await;
+                                }
+                            })
                             .await;
-                        }
                     } else {
                         tracing::error!("FAILED to get items for library '{}'", library.title);
                     }
                 }
             }
 
-            if let Err(e) = tx.commit().await {
-                tracing::error!(
-                    "Failed to commit transaction for server '{}': {}",
-                    server.name,
-                    e
-                );
-            } else {
-                tracing::info!("Successfully synced server '{}'", server.name);
-            }
+            tracing::info!("Successfully synced server '{}'", server.name);
         }
     } else {
         tracing::warn!(
             "Skipping server '{}' (no remote connection or token).",
             server.name
         );
-        if let Ok(mut tx) = db_pool.begin().await {
-            if db::upsert_server(&mut tx, &server, false, sync_start_time)
-                .await
-                .is_ok()
-            {
-                let _ = tx.commit().await;
-            }
+        if db::upsert_server(&db_pool, &server, false, sync_start_time)
+            .await
+            .is_err()
+        {
+            tracing::error!("Failed to mark server '{}' as offline.", server.name);
         }
     }
 }
