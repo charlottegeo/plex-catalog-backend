@@ -19,15 +19,20 @@ mod models;
 mod plex_client;
 mod routes;
 
+//Hours between syncs
 const SYNC_INTERVAL_HOURS: u64 = 12;
+
+//Library types for syncing, others (music, photos, etc.) are ignored
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 
+//Shared application state
 pub struct AppState {
     pub plex_client: Arc<Mutex<PlexClient>>,
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, Bytes>,
 }
 
+//Recursively sync a library item and its children into database
 fn sync_item_and_children<'a>(
     client_arc: &'a Arc<Mutex<PlexClient>>,
     tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,

@@ -17,8 +17,8 @@ impl PlexClient {
         let client_identifier = String::from("rust-plex-catalog-backend-uuid");
         let http_client = ClientBuilder::new()
             .danger_accept_invalid_certs(true)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(120))
             .build()
             .expect("Failed to build reqwest client");
 
@@ -203,7 +203,10 @@ impl PlexClient {
         let container: ItemMediaContainer = response.json().await?;
         Ok(container.media_container)
     }
-    pub async fn check_server_health(&self, server: &Device) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn check_server_health(
+        &self,
+        server: &Device,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let remote_conn = server.connections.iter().find(|c| !c.local);
         let server_token = server.access_token.as_ref();
 

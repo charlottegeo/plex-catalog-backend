@@ -39,9 +39,12 @@ struct EpisodeWithVersion {
 }
 
 pub async fn get_all_servers(pool: &PgPool) -> Result<Vec<DbServer>, sqlx::Error> {
-    sqlx::query_as!(DbServer, "SELECT * FROM servers ORDER BY is_online DESC, name")
-        .fetch_all(pool)
-        .await
+    sqlx::query_as!(
+        DbServer,
+        "SELECT * FROM servers ORDER BY is_online DESC, name"
+    )
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn get_server_libraries(
