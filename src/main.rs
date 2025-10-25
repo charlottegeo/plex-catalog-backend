@@ -75,24 +75,34 @@ fn sync_item_and_children<'a>(
 
                 match children_result {
                     Ok(children) => {
-                        for child_item in &children.items {
-                            let mut episode_item = child_item.clone();
-                            if child_item.item_type == "episode" {
-                                episode_item.parent_id = Some(item.rating_key.clone());
-                            }
+                        stream::iter(children.items)
+                            .for_each_concurrent(10, |child_item| {
+                                let client_arc_clone = client_arc.clone();
+                                let db_pool_clone = db_pool.clone();
+                                let server_id_clone = server_id.to_string();
+                                let library_key_clone = library_key.to_string();
+                                let item_rating_key_clone = item.rating_key.clone();
 
-                            sync_item_and_children(
-                                client_arc,
-                                db_pool,
-                                server_uri,
-                                server_token,
-                                server_id,
-                                library_key,
-                                &episode_item,
-                                sync_time,
-                            )
+                                async move {
+                                    let mut episode_item = child_item.clone();
+                                    if child_item.item_type == "episode" {
+                                        episode_item.parent_id = Some(item_rating_key_clone);
+                                    }
+
+                                    sync_item_and_children(
+                                        &client_arc_clone,
+                                        &db_pool_clone,
+                                        server_uri,
+                                        server_token,
+                                        &server_id_clone,
+                                        &library_key_clone,
+                                        &episode_item,
+                                        sync_time,
+                                    )
+                                    .await;
+                                }
+                            })
                             .await;
-                        }
                     }
                     Err(e) => {
                         tracing::error!(
@@ -113,19 +123,28 @@ fn sync_item_and_children<'a>(
 
                 match children_result {
                     Ok(children) => {
-                        for child_item in &children.items {
-                            sync_item_and_children(
-                                client_arc,
-                                db_pool,
-                                server_uri,
-                                server_token,
-                                server_id,
-                                library_key,
-                                child_item,
-                                sync_time,
-                            )
+                        stream::iter(children.items)
+                            .for_each_concurrent(10, |child_item| {
+                                let client_arc_clone = client_arc.clone();
+                                let db_pool_clone = db_pool.clone();
+                                let server_id_clone = server_id.to_string();
+                                let library_key_clone = library_key.to_string();
+
+                                async move {
+                                    sync_item_and_children(
+                                        &client_arc_clone,
+                                        &db_pool_clone,
+                                        server_uri,
+                                        server_token,
+                                        &server_id_clone,
+                                        &library_key_clone,
+                                        &child_item,
+                                        sync_time,
+                                    )
+                                    .await;
+                                }
+                            })
                             .await;
-                        }
                     }
                     Err(e) => {
                         tracing::error!(
@@ -164,19 +183,30 @@ fn sync_item_and_children<'a>(
                                         e
                                     );
                                 } else {
-                                    for stream in &part.streams {
-                                        if let Err(e) = db::upsert_stream(
-                                            db_pool, stream, part.id, server_id, sync_time,
-                                        )
-                                        .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to upsert stream for item '{}': {:?}",
-                                                item.title,
-                                                e
-                                            );
-                                        }
-                                    }
+                                    stream::iter(&part.streams)
+                                        .for_each_concurrent(5, |stream| {
+                                            let db_pool_clone = db_pool.clone();
+                                            let server_id_clone = server_id.to_string();
+
+                                            async move {
+                                                if let Err(e) = db::upsert_stream(
+                                                    &db_pool_clone,
+                                                    stream,
+                                                    part.id,
+                                                    &server_id_clone,
+                                                    sync_time,
+                                                )
+                                                .await
+                                                {
+                                                    tracing::error!(
+                                                        "Failed to upsert stream for item '{}': {:?}",
+                                                        item.title,
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        })
+                                        .await;
                                 }
                             }
                         }
