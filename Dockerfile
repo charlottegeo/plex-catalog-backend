@@ -11,5 +11,6 @@ WORKDIR /app
 COPY . .
 ENV SQLX_OFFLINE=true
 RUN cargo build --release
+ENV RUST_LOG=info
 EXPOSE 3001
 CMD ["./target/release/plex-catalog-backend"]
