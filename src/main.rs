@@ -76,7 +76,7 @@ fn sync_item_and_children<'a>(
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(10, |child_item| {
+                            .for_each_concurrent(5, |child_item| {
                                 let client_arc_clone = client_arc.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
@@ -124,7 +124,7 @@ fn sync_item_and_children<'a>(
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(10, |child_item| {
+                            .for_each_concurrent(5, |child_item| {
                                 let client_arc_clone = client_arc.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
@@ -306,7 +306,7 @@ async fn sync_server(
                         );
 
                         stream::iter(item_list.items)
-                            .for_each_concurrent(10, |item| {
+                            .for_each_concurrent(5, |item| {
                                 let client_arc_clone = client_arc.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server.client_identifier.clone();
@@ -370,7 +370,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     if let Ok(servers) = servers_result {
         tracing::info!("Syncing {} online servers...", servers.len());
         stream::iter(servers)
-            .for_each_concurrent(10, |server| {
+            .for_each_concurrent(5, |server| {
                 sync_server(server, client_arc.clone(), db_pool.clone(), sync_start_time)
             })
             .await;
