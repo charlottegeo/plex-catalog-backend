@@ -8,7 +8,6 @@ use sqlx::postgres::PgPoolOptions;
 use std::future::Future;
 use std::io::Result;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 mod auth;
@@ -359,7 +358,7 @@ async fn sync_server(
 
 async fn run_database_sync(app_state: &web::Data<AppState>) {
     let sync_start_time = chrono::Utc::now();
-    let mut client = app_state.plex_client.clone();
+    let client = app_state.plex_client.clone();
     let db_pool = app_state.db_pool.clone();
 
     if let Err(e) = client.ensure_logged_in().await {

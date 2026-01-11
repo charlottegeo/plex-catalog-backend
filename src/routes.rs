@@ -60,7 +60,7 @@ async fn get_item_details_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let client = state.plex_client.lock().await;
+    let client = &state.plex_client;
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
 
     let item_option = client
@@ -83,7 +83,7 @@ async fn get_item_children_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let client = state.plex_client.lock().await;
+    let client = &state.plex_client;
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
 
     let children = client
@@ -115,8 +115,7 @@ async fn get_image_handler(
     }
 
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
-
-    let client = state.plex_client.lock().await;
+    let client = &state.plex_client;
     let image_response = client
         .get_image(
             &server_details.connection_uri,
