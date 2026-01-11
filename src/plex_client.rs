@@ -4,12 +4,15 @@ use crate::models::{
 };
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
+#[derive(Clone)]
 pub struct PlexClient {
     http_client: Client,
     client_identifier: String,
-    auth_token: Option<String>,
+    auth_token: Arc<RwLock<Option<String>>>,
 }
 
 impl PlexClient {
@@ -17,20 +20,20 @@ impl PlexClient {
         let client_identifier = String::from("rust-plex-catalog-backend-uuid");
         let http_client = ClientBuilder::new()
             .danger_accept_invalid_certs(true)
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300))
             .build()
             .expect("Failed to build reqwest client");
 
         PlexClient {
             http_client,
             client_identifier,
-            auth_token: None,
+            auth_token: Arc::new(RwLock::new(None)),
         }
     }
 
-    pub async fn ensure_logged_in(&mut self) -> Result<(), reqwest::Error> {
-        if self.auth_token.is_some() {
+    pub async fn ensure_logged_in(&self) -> Result<(), reqwest::Error> {
+        if self.auth_token.read().await.is_some() {
             return Ok(());
         }
         println!("PlexClient is not logged in. Authenticating...");
@@ -51,15 +54,17 @@ impl PlexClient {
 
         let successful_response = response.error_for_status()?;
         let login_data: LoginResponse = successful_response.json().await?;
-        self.auth_token = Some(login_data.user.auth_token);
+
+        let mut token_lock = self.auth_token.write().await;
+        *token_lock = Some(login_data.user.auth_token);
 
         println!("Authentication successful!");
         Ok(())
     }
 
     pub async fn get_servers(&self) -> Result<Vec<Device>, reqwest::Error> {
-        let token = self
-            .auth_token
+        let token_lock = self.auth_token.read().await;
+        let token = token_lock
             .as_ref()
             .expect("get_servers called before login");
 
@@ -140,6 +145,28 @@ impl PlexClient {
         Ok(container.media_container.items.into_iter().next())
     }
 
+    pub async fn get_item_all_leaves(
+        &self,
+        server_uri: &str,
+        server_token: &str,
+        rating_key: &str,
+    ) -> Result<ItemList, reqwest::Error> {
+        let response = self
+            .http_client
+            .get(format!(
+                "{}/library/metadata/{}/allLeaves",
+                server_uri, rating_key
+            ))
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", server_token)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let container: ItemMediaContainer = response.json().await?;
+        Ok(container.media_container)
+    }
+
     pub async fn get_item_children(
         &self,
         server_uri: &str,
@@ -181,48 +208,5 @@ impl PlexClient {
             .await?
             .error_for_status()?;
         Ok(response)
-    }
-    pub async fn get_item_all_leaves(
-        &self,
-        server_uri: &str,
-        server_token: &str,
-        rating_key: &str,
-    ) -> Result<ItemList, reqwest::Error> {
-        let response = self
-            .http_client
-            .get(format!(
-                "{}/library/metadata/{}/allLeaves",
-                server_uri, rating_key
-            ))
-            .header("Accept", "application/json")
-            .header("X-Plex-Token", server_token)
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let container: ItemMediaContainer = response.json().await?;
-        Ok(container.media_container)
-    }
-    pub async fn check_server_health(
-        &self,
-        server: &Device,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let remote_conn = server.connections.iter().find(|c| !c.local);
-        let server_token = server.access_token.as_ref();
-
-        if let (Some(conn), Some(token)) = (remote_conn, server_token) {
-            self.http_client
-                .get(&conn.uri)
-                .header("X-Plex-Token", token)
-                .send()
-                .await?
-                .error_for_status()?;
-            Ok(())
-        } else {
-            Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "No remote connection or token",
-            )))
-        }
     }
 }

@@ -10,7 +10,6 @@ use std::io::Result;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 mod auth;
 mod db;
@@ -27,14 +26,14 @@ const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 
 //Shared application state
 pub struct AppState {
-    pub plex_client: Arc<Mutex<PlexClient>>,
+    pub plex_client: PlexClient,
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, Bytes>,
 }
 
 //Recursively sync a library item and its children into database
 fn sync_item_and_children<'a>(
-    client_arc: &'a Arc<Mutex<PlexClient>>,
+    client: &'a PlexClient,
     db_pool: &'a sqlx::PgPool,
     server_uri: &'a str,
     server_token: &'a str,
@@ -54,30 +53,34 @@ fn sync_item_and_children<'a>(
         }
         match item.item_type.as_str() {
             "show" => {
-                let mut children_result = {
-                    let client = client_arc.lock().await;
-                    client
-                        .get_item_children(server_uri, server_token, &item.rating_key)
-                        .await
-                };
+                let mut children_result = client
+                    .get_item_children(server_uri, server_token, &item.rating_key)
+                    .await;
 
+                let mut use_fallback = false;
                 if let Ok(children) = &children_result {
-                    if children.items.is_empty() && item.leaf_count.unwrap_or(0) > 0 {
-                        tracing::info!("'{}' has no children via /children but has a leaf_count. Trying /allLeaves fallback.", item.title);
-                        children_result = {
-                            let client = client_arc.lock().await;
-                            client
-                                .get_item_all_leaves(server_uri, server_token, &item.rating_key)
-                                .await
-                        };
+                    if children.items.is_empty()
+                        || children.items.iter().any(|i| i.item_type == "episode")
+                    {
+                        use_fallback = true;
                     }
+                }
+
+                if use_fallback {
+                    tracing::info!(
+                        "'{}' appears flattened or empty. Using /allLeaves.",
+                        item.title
+                    );
+                    children_result = client
+                        .get_item_all_leaves(server_uri, server_token, &item.rating_key)
+                        .await;
                 }
 
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(5, |child_item| {
-                                let client_arc_clone = client_arc.clone();
+                            .for_each_concurrent(20, |child_item| {
+                                let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
                                 let library_key_clone = library_key.to_string();
@@ -85,12 +88,14 @@ fn sync_item_and_children<'a>(
 
                                 async move {
                                     let mut episode_item = child_item.clone();
-                                    if child_item.item_type == "episode" {
+                                    if child_item.item_type == "episode"
+                                        && episode_item.parent_id.is_none()
+                                    {
                                         episode_item.parent_id = Some(item_rating_key_clone);
                                     }
 
                                     sync_item_and_children(
-                                        &client_arc_clone,
+                                        &client_clone,
                                         &db_pool_clone,
                                         server_uri,
                                         server_token,
@@ -114,25 +119,22 @@ fn sync_item_and_children<'a>(
                 }
             }
             "season" => {
-                let children_result = {
-                    let client = client_arc.lock().await;
-                    client
-                        .get_item_children(server_uri, server_token, &item.rating_key)
-                        .await
-                };
+                let children_result = client
+                    .get_item_children(server_uri, server_token, &item.rating_key)
+                    .await;
 
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(5, |child_item| {
-                                let client_arc_clone = client_arc.clone();
+                            .for_each_concurrent(20, |child_item| {
+                                let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
                                 let library_key_clone = library_key.to_string();
 
                                 async move {
                                     sync_item_and_children(
-                                        &client_arc_clone,
+                                        &client_clone,
                                         &db_pool_clone,
                                         server_uri,
                                         server_token,
@@ -156,11 +158,21 @@ fn sync_item_and_children<'a>(
                 }
             }
             "movie" | "episode" => {
-                let details_result = {
-                    let client = client_arc.lock().await;
-                    client
+                let mut attempts = 0;
+                let details_result = loop {
+                    match client
                         .get_item_details(server_uri, server_token, &item.rating_key)
                         .await
+                    {
+                        Ok(res) => break Ok(res),
+                        Err(e) => {
+                            attempts += 1;
+                            if attempts >= 3 {
+                                break Err(e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
+                        }
+                    }
                 };
 
                 match details_result {
@@ -184,7 +196,7 @@ fn sync_item_and_children<'a>(
                                     );
                                 } else {
                                     stream::iter(&part.streams)
-                                        .for_each_concurrent(5, |stream| {
+                                        .for_each_concurrent(20, |stream| {
                                             let db_pool_clone = db_pool.clone();
                                             let server_id_clone = server_id.to_string();
 
@@ -224,7 +236,7 @@ fn sync_item_and_children<'a>(
 
 async fn sync_server(
     server: models::Device,
-    client_arc: Arc<Mutex<PlexClient>>,
+    client: PlexClient,
     db_pool: sqlx::PgPool,
     sync_start_time: chrono::DateTime<chrono::Utc>,
 ) {
@@ -237,7 +249,6 @@ async fn sync_server(
         let mut delay = Duration::from_secs(2);
 
         let libraries_result = loop {
-            let client = client_arc.lock().await;
             match client.get_libraries(&conn.uri, token).await {
                 Ok(libraries) => break Ok(libraries),
                 Err(e) => {
@@ -291,12 +302,9 @@ async fn sync_server(
                         continue;
                     }
 
-                    let items_result = {
-                        let client = client_arc.lock().await;
-                        client
-                            .get_library_items(&conn.uri, token, &library.key)
-                            .await
-                    };
+                    let items_result = client
+                        .get_library_items(&conn.uri, token, &library.key)
+                        .await;
 
                     if let Ok(item_list) = items_result {
                         tracing::info!(
@@ -306,15 +314,15 @@ async fn sync_server(
                         );
 
                         stream::iter(item_list.items)
-                            .for_each_concurrent(5, |item| {
-                                let client_arc_clone = client_arc.clone();
+                            .for_each_concurrent(20, |item| {
+                                let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server.client_identifier.clone();
                                 let library_key_clone = library.key.clone();
 
                                 async move {
                                     sync_item_and_children(
-                                        &client_arc_clone,
+                                        &client_clone,
                                         &db_pool_clone,
                                         &conn.uri,
                                         token,
@@ -351,27 +359,21 @@ async fn sync_server(
 
 async fn run_database_sync(app_state: &web::Data<AppState>) {
     let sync_start_time = chrono::Utc::now();
-    let client_arc = Arc::clone(&app_state.plex_client);
+    let mut client = app_state.plex_client.clone();
     let db_pool = app_state.db_pool.clone();
 
-    {
-        let mut client = client_arc.lock().await;
-        if let Err(e) = client.ensure_logged_in().await {
-            tracing::error!("Failed to log in to Plex: {:?}", e);
-            return;
-        }
+    if let Err(e) = client.ensure_logged_in().await {
+        tracing::error!("Failed to log in to Plex: {:?}", e);
+        return;
     }
 
-    let servers_result = {
-        let client = client_arc.lock().await;
-        client.get_servers().await
-    };
+    let servers_result = client.get_servers().await;
 
     if let Ok(servers) = servers_result {
         tracing::info!("Syncing {} online servers...", servers.len());
         stream::iter(servers)
-            .for_each_concurrent(5, |server| {
-                sync_server(server, client_arc.clone(), db_pool.clone(), sync_start_time)
+            .for_each_concurrent(20, |server| {
+                sync_server(server, client.clone(), db_pool.clone(), sync_start_time)
             })
             .await;
     } else {
@@ -408,13 +410,13 @@ async fn main() -> Result<()> {
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_pool = PgPoolOptions::new()
-        .max_connections(100)
+        .max_connections(15)
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres.");
     tracing::info!("Successfully connected to database.");
 
-    let plex_client = Arc::new(Mutex::new(PlexClient::new()));
+    let plex_client = PlexClient::new();
 
     let image_cache = Cache::builder()
         .max_capacity(500 * 1024 * 1024)
