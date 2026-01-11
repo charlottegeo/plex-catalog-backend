@@ -8,7 +8,9 @@ use sqlx::postgres::PgPoolOptions;
 use std::future::Future;
 use std::io::Result;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 mod auth;
 mod db;
@@ -28,10 +30,12 @@ pub struct AppState {
     pub plex_client: PlexClient,
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, Bytes>,
+    pub sync_semaphore: Arc<Semaphore>,
 }
 
 //Recursively sync a library item and its children into database
 fn sync_item_and_children<'a>(
+    state: &'a AppState,
     client: &'a PlexClient,
     db_pool: &'a sqlx::PgPool,
     server_uri: &'a str,
@@ -42,6 +46,14 @@ fn sync_item_and_children<'a>(
     sync_time: chrono::DateTime<chrono::Utc>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
+        let _permit = state
+            .sync_semaphore
+            .acquire()
+            .await
+            .map_err(|e| {
+                tracing::error!("Semaphore closed: {:?}", e);
+            })
+            .unwrap();
         if let Err(e) = db::upsert_item(db_pool, item, library_key, server_id, sync_time).await {
             tracing::error!(
                 "Failed to upsert item '{}': {:?}. Skipping its children.",
@@ -78,7 +90,7 @@ fn sync_item_and_children<'a>(
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(20, |child_item| {
+                            .for_each_concurrent(5, |child_item| {
                                 let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
@@ -94,6 +106,7 @@ fn sync_item_and_children<'a>(
                                     }
 
                                     sync_item_and_children(
+                                        state,
                                         &client_clone,
                                         &db_pool_clone,
                                         server_uri,
@@ -125,7 +138,7 @@ fn sync_item_and_children<'a>(
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
-                            .for_each_concurrent(20, |child_item| {
+                            .for_each_concurrent(5, |child_item| {
                                 let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
@@ -133,6 +146,7 @@ fn sync_item_and_children<'a>(
 
                                 async move {
                                     sync_item_and_children(
+                                        state,
                                         &client_clone,
                                         &db_pool_clone,
                                         server_uri,
@@ -195,7 +209,7 @@ fn sync_item_and_children<'a>(
                                     );
                                 } else {
                                     stream::iter(&part.streams)
-                                        .for_each_concurrent(20, |stream| {
+                                        .for_each_concurrent(5, |stream| {
                                             let db_pool_clone = db_pool.clone();
                                             let server_id_clone = server_id.to_string();
 
@@ -234,6 +248,7 @@ fn sync_item_and_children<'a>(
 }
 
 async fn sync_server(
+    state: web::Data<AppState>,
     server: models::Device,
     client: PlexClient,
     db_pool: sqlx::PgPool,
@@ -313,14 +328,15 @@ async fn sync_server(
                         );
 
                         stream::iter(item_list.items)
-                            .for_each_concurrent(20, |item| {
+                            .for_each_concurrent(10, |item| {
                                 let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server.client_identifier.clone();
                                 let library_key_clone = library.key.clone();
-
+                                let state_clone = state.clone();
                                 async move {
                                     sync_item_and_children(
+                                        &state_clone,
                                         &client_clone,
                                         &db_pool_clone,
                                         &conn.uri,
@@ -371,8 +387,14 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     if let Ok(servers) = servers_result {
         tracing::info!("Syncing {} online servers...", servers.len());
         stream::iter(servers)
-            .for_each_concurrent(20, |server| {
-                sync_server(server, client.clone(), db_pool.clone(), sync_start_time)
+            .for_each_concurrent(3, |server| {
+                sync_server(
+                    app_state.clone(),
+                    server,
+                    client.clone(),
+                    db_pool.clone(),
+                    sync_start_time,
+                )
             })
             .await;
     } else {
@@ -426,6 +448,7 @@ async fn main() -> Result<()> {
         plex_client: plex_client.clone(),
         db_pool: db_pool.clone(),
         image_cache,
+        sync_semaphore: Arc::new(Semaphore::new(25)),
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));
