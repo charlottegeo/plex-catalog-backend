@@ -46,7 +46,7 @@ fn sync_item_and_children<'a>(
     sync_time: chrono::DateTime<chrono::Utc>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
-        let _permit = state
+        let permit = state
             .sync_semaphore
             .acquire()
             .await
@@ -64,10 +64,10 @@ fn sync_item_and_children<'a>(
         }
         match item.item_type.as_str() {
             "show" => {
+                drop(permit); 
                 let mut children_result = client
                     .get_item_children(server_uri, server_token, &item.rating_key)
                     .await;
-
                 let mut use_fallback = false;
                 if let Ok(children) = &children_result {
                     if children.items.is_empty()
@@ -76,7 +76,6 @@ fn sync_item_and_children<'a>(
                         use_fallback = true;
                     }
                 }
-
                 if use_fallback {
                     tracing::info!(
                         "'{}' appears flattened or empty. Using /allLeaves.",
@@ -86,7 +85,6 @@ fn sync_item_and_children<'a>(
                         .get_item_all_leaves(server_uri, server_token, &item.rating_key)
                         .await;
                 }
-
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
@@ -104,7 +102,6 @@ fn sync_item_and_children<'a>(
                                     {
                                         episode_item.parent_id = Some(item_rating_key_clone);
                                     }
-
                                     sync_item_and_children(
                                         state,
                                         &client_clone,
@@ -131,10 +128,10 @@ fn sync_item_and_children<'a>(
                 }
             }
             "season" => {
+                drop(permit);
                 let children_result = client
                     .get_item_children(server_uri, server_token, &item.rating_key)
                     .await;
-
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
@@ -143,7 +140,6 @@ fn sync_item_and_children<'a>(
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server_id.to_string();
                                 let library_key_clone = library_key.to_string();
-
                                 async move {
                                     sync_item_and_children(
                                         state,
@@ -187,7 +183,6 @@ fn sync_item_and_children<'a>(
                         }
                     }
                 };
-
                 match details_result {
                     Ok(Some(details)) => {
                         if let Some(media) = details.media.first() {
@@ -242,7 +237,9 @@ fn sync_item_and_children<'a>(
                     }
                 }
             }
-            _ => {}
+            _ => {
+                drop(permit); 
+            }
         }
     })
 }
