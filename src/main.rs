@@ -64,7 +64,7 @@ fn sync_item_and_children<'a>(
         }
         match item.item_type.as_str() {
             "show" => {
-                drop(permit); 
+                drop(permit);
                 let mut children_result = client
                     .get_item_children(server_uri, server_token, &item.rating_key)
                     .await;
@@ -97,7 +97,9 @@ fn sync_item_and_children<'a>(
 
                                 async move {
                                     let mut episode_item = child_item.clone();
-                                    if child_item.item_type == "episode"
+                                    if child_item.item_type == "episode" && use_fallback {
+                                        episode_item.parent_id = Some(item_rating_key_clone);
+                                    } else if child_item.item_type == "episode"
                                         && episode_item.parent_id.is_none()
                                     {
                                         episode_item.parent_id = Some(item_rating_key_clone);
@@ -238,7 +240,7 @@ fn sync_item_and_children<'a>(
                 }
             }
             _ => {
-                drop(permit); 
+                drop(permit);
             }
         }
     })

@@ -32,6 +32,7 @@ struct EpisodeWithVersion {
     title: String,
     summary: Option<String>,
     thumb_path: Option<String>,
+    index: Option<i32>,
     video_resolution: Option<String>,
     subtitle_language: Option<String>,
 }
@@ -485,7 +486,7 @@ pub async fn get_season_episodes(
         EpisodeWithVersion,
         r#"
         SELECT
-            e.id, e.title, e.summary, e.thumb_path,
+            e.id, e.title, e.summary, e.thumb_path, e.index,
             mp.video_resolution, s.language as "subtitle_language"
         FROM items e
         LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id
@@ -509,6 +510,7 @@ pub async fn get_season_episodes(
                 title: row.title.clone(),
                 summary: row.summary.clone(),
                 thumb_path: row.thumb_path.clone(),
+                index: row.index,
                 versions: Vec::new(),
             });
 
@@ -533,7 +535,7 @@ pub async fn get_season_episodes(
     }
 
     let mut sorted_episodes: Vec<EpisodeDetails> = episodes.into_values().collect();
-    sorted_episodes.sort_by_key(|e| e.id.clone());
+    sorted_episodes.sort_by_key(|e| e.index.unwrap_or(0));
 
     Ok(sorted_episodes)
 }

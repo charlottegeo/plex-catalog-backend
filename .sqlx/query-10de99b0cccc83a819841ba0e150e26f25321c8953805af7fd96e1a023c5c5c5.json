@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            e.id, e.title, e.summary, e.thumb_path,\n            mp.video_resolution, s.language as \"subtitle_language\"\n        FROM items e\n        LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE (e.parent_id = $1 OR e.id = $1) AND e.server_id = $2 AND e.item_type = 'episode'\n        ORDER BY e.index ASC\n        ",
+  "query": "\n        SELECT\n            e.id, e.title, e.summary, e.thumb_path, e.index,\n            mp.video_resolution, s.language as \"subtitle_language\"\n        FROM items e\n        LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE (e.parent_id = $1 OR e.id = $1) AND e.server_id = $2 AND e.item_type = 'episode'\n        ORDER BY e.index ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -25,11 +25,16 @@
       },
       {
         "ordinal": 4,
+        "name": "index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
         "name": "video_resolution",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "subtitle_language",
         "type_info": "Text"
       }
@@ -46,8 +51,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "22ddc0612c981a16483e9a68c7ca93901ca7d54481908b20a3cbf081f242dba5"
+  "hash": "10de99b0cccc83a819841ba0e150e26f25321c8953805af7fd96e1a023c5c5c5"
 }

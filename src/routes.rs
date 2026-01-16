@@ -155,7 +155,7 @@ async fn search_handler(
     Ok(HttpResponse::Ok().json(search_results))
 }
 
-#[get("/media/{guid}")]
+#[get("/media/{guid:.*}")]
 async fn get_media_details_handler(
     state: web::Data<AppState>,
     path: web::Path<String>,

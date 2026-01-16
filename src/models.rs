@@ -225,6 +225,7 @@ pub struct EpisodeDetails {
     pub title: String,
     pub summary: Option<String>,
     pub thumb_path: Option<String>,
+    pub index: Option<i32>,
     pub versions: Vec<MediaVersion>,
 }
 
