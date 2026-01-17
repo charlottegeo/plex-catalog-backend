@@ -453,7 +453,7 @@ async fn main() -> Result<()> {
         plex_client: plex_client.clone(),
         db_pool: db_pool.clone(),
         image_cache,
-        sync_semaphore: Arc::new(Semaphore::new(12)),
+        sync_semaphore: Arc::new(Semaphore::new(4)),
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));

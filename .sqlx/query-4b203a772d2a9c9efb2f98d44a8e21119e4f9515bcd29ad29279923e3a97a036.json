@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO servers (id, name, access_token, connection_uri, last_seen, is_online)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT (id) DO UPDATE SET\n            last_seen = EXCLUDED.last_seen,\n            is_online = EXCLUDED.is_online,\n            name = CASE WHEN servers.name IS DISTINCT FROM EXCLUDED.name THEN EXCLUDED.name ELSE servers.name END,\n            access_token = CASE WHEN servers.access_token IS DISTINCT FROM EXCLUDED.access_token THEN EXCLUDED.access_token ELSE servers.access_token END,\n            connection_uri = CASE WHEN servers.connection_uri IS DISTINCT FROM EXCLUDED.connection_uri THEN EXCLUDED.connection_uri ELSE servers.connection_uri END\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4b203a772d2a9c9efb2f98d44a8e21119e4f9515bcd29ad29279923e3a97a036"
+}

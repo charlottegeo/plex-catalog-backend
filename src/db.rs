@@ -67,6 +67,7 @@ pub async fn get_server_libraries(
     })
     .collect()
 }
+
 pub async fn get_library_items(
     pool: &PgPool,
     server_id: &str,
@@ -105,6 +106,7 @@ pub async fn get_library_items(
     })
     .collect()
 }
+
 pub async fn upsert_server(
     pool: &PgPool,
     server: &Device,
@@ -123,11 +125,11 @@ pub async fn upsert_server(
         INSERT INTO servers (id, name, access_token, connection_uri, last_seen, is_online)
         VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            access_token = EXCLUDED.access_token,
-            connection_uri = EXCLUDED.connection_uri,
             last_seen = EXCLUDED.last_seen,
-            is_online = EXCLUDED.is_online
+            is_online = EXCLUDED.is_online,
+            name = CASE WHEN servers.name IS DISTINCT FROM EXCLUDED.name THEN EXCLUDED.name ELSE servers.name END,
+            access_token = CASE WHEN servers.access_token IS DISTINCT FROM EXCLUDED.access_token THEN EXCLUDED.access_token ELSE servers.access_token END,
+            connection_uri = CASE WHEN servers.connection_uri IS DISTINCT FROM EXCLUDED.connection_uri THEN EXCLUDED.connection_uri ELSE servers.connection_uri END
         "#,
         server.client_identifier,
         server.name,
@@ -152,9 +154,9 @@ pub async fn upsert_library(
         INSERT INTO libraries (id, server_id, title, library_type, last_seen)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (id, server_id) DO UPDATE SET
-            title = EXCLUDED.title,
-            library_type = EXCLUDED.library_type,
-            last_seen = EXCLUDED.last_seen
+            last_seen = EXCLUDED.last_seen,
+            title = CASE WHEN libraries.title IS DISTINCT FROM EXCLUDED.title THEN EXCLUDED.title ELSE libraries.title END,
+            library_type = CASE WHEN libraries.library_type IS DISTINCT FROM EXCLUDED.library_type THEN EXCLUDED.library_type ELSE libraries.library_type END
         "#,
         library.key,
         server_id,
@@ -179,15 +181,15 @@ pub async fn upsert_item(
         INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (id, server_id) DO UPDATE SET
-            title = EXCLUDED.title,
-            summary = EXCLUDED.summary,
-            year = EXCLUDED.year,
-            thumb_path = EXCLUDED.thumb_path,
-            art_path = EXCLUDED.art_path,
             last_seen = EXCLUDED.last_seen,
-            guid = EXCLUDED.guid,
-            index = EXCLUDED.index,
-            leaf_count = EXCLUDED.leaf_count
+            title = CASE WHEN items.title IS DISTINCT FROM EXCLUDED.title THEN EXCLUDED.title ELSE items.title END,
+            summary = CASE WHEN items.summary IS DISTINCT FROM EXCLUDED.summary THEN EXCLUDED.summary ELSE items.summary END,
+            year = CASE WHEN items.year IS DISTINCT FROM EXCLUDED.year THEN EXCLUDED.year ELSE items.year END,
+            thumb_path = CASE WHEN items.thumb_path IS DISTINCT FROM EXCLUDED.thumb_path THEN EXCLUDED.thumb_path ELSE items.thumb_path END,
+            art_path = CASE WHEN items.art_path IS DISTINCT FROM EXCLUDED.art_path THEN EXCLUDED.art_path ELSE items.art_path END,
+            guid = CASE WHEN items.guid IS DISTINCT FROM EXCLUDED.guid THEN EXCLUDED.guid ELSE items.guid END,
+            index = CASE WHEN items.index IS DISTINCT FROM EXCLUDED.index THEN EXCLUDED.index ELSE items.index END,
+            leaf_count = CASE WHEN items.leaf_count IS DISTINCT FROM EXCLUDED.leaf_count THEN EXCLUDED.leaf_count ELSE items.leaf_count END
         "#,
         item.rating_key,
         library_id,
@@ -223,8 +225,8 @@ pub async fn upsert_media_part(
         INSERT INTO media_parts (id, item_id, server_id, video_resolution, last_seen)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (id, server_id) DO UPDATE SET
-            video_resolution = EXCLUDED.video_resolution,
-            last_seen = EXCLUDED.last_seen
+            last_seen = EXCLUDED.last_seen,
+            video_resolution = CASE WHEN media_parts.video_resolution IS DISTINCT FROM EXCLUDED.video_resolution THEN EXCLUDED.video_resolution ELSE media_parts.video_resolution END
         "#,
         part.id,
         item_id,
@@ -249,10 +251,10 @@ pub async fn upsert_stream(
         INSERT INTO streams (id, media_part_id, server_id, stream_type, language, language_code, format, last_seen)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id, server_id) DO UPDATE SET
-            language = EXCLUDED.language,
-            language_code = EXCLUDED.language_code,
-            format = EXCLUDED.format,
-            last_seen = EXCLUDED.last_seen
+            last_seen = EXCLUDED.last_seen,
+            language = CASE WHEN streams.language IS DISTINCT FROM EXCLUDED.language THEN EXCLUDED.language ELSE streams.language END,
+            language_code = CASE WHEN streams.language_code IS DISTINCT FROM EXCLUDED.language_code THEN EXCLUDED.language_code ELSE streams.language_code END,
+            format = CASE WHEN streams.format IS DISTINCT FROM EXCLUDED.format THEN EXCLUDED.format ELSE streams.format END
         "#,
         stream.id,
         part_id,
