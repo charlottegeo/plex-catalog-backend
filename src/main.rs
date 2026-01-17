@@ -333,7 +333,7 @@ async fn sync_server(
                         );
 
                         stream::iter(item_list.items)
-                            .for_each_concurrent(10, |item| {
+                            .for_each_concurrent(2, |item| {
                                 let client_clone = client.clone();
                                 let db_pool_clone = db_pool.clone();
                                 let server_id_clone = server.client_identifier.clone();
@@ -392,7 +392,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     if let Ok(servers) = servers_result {
         tracing::info!("Syncing {} online servers...", servers.len());
         stream::iter(servers)
-            .for_each_concurrent(3, |server| {
+            .for_each_concurrent(1, |server| {
                 sync_server(
                     app_state.clone(),
                     server,
@@ -464,6 +464,7 @@ async fn main() -> Result<()> {
             .app_data(app_state.clone())
             .configure(routes::configure)
     })
+    .workers(4)
     .bind(("0.0.0.0", 3001))?
     .run()
     .await
