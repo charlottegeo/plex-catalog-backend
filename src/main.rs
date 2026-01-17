@@ -9,7 +9,7 @@ use std::future::Future;
 use std::io::Result;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 mod auth;
@@ -19,13 +19,9 @@ mod models;
 mod plex_client;
 mod routes;
 
-//Hours between syncs
 const SYNC_INTERVAL_HOURS: u64 = 12;
-
-//Library types for syncing, others (music, photos, etc.) are ignored
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 
-//Shared application state
 #[derive(Clone)]
 pub struct AppState {
     pub plex_client: PlexClient,
@@ -34,7 +30,6 @@ pub struct AppState {
     pub sync_semaphore: Arc<Semaphore>,
 }
 
-//Recursively sync a library item and its children into database
 fn sync_item_and_children<'a>(
     state: &'a AppState,
     client: &'a PlexClient,
@@ -47,43 +42,31 @@ fn sync_item_and_children<'a>(
     sync_time: chrono::DateTime<chrono::Utc>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
-        let permit = state
-            .sync_semaphore
-            .acquire()
-            .await
-            .map_err(|e| {
-                tracing::error!("Semaphore closed: {:?}", e);
-            })
-            .unwrap();
+        let _permit = match state.sync_semaphore.acquire().await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("Critical: Sync semaphore closed unexpectedly: {:?}", e);
+                return;
+            }
+        };
+
         if let Err(e) = db::upsert_item(db_pool, item, library_key, server_id, sync_time).await {
             tracing::error!(
-                "Failed to upsert item '{}': {:?}. Skipping its children.",
+                "Database Error: Failed to upsert item '{}' (Type: {}): {:?}",
                 item.title,
+                item.item_type,
                 e
             );
             return;
         }
+
         match item.item_type.as_str() {
             "show" => {
-                drop(permit);
-                let mut attempts = 0;
-                let children_result = loop {
-                    match client
-                        .get_item_children(server_uri, server_token, &item.rating_key)
-                        .await
-                    {
-                        Ok(res) => break Ok(res),
-                        Err(e) => {
-                            attempts += 1;
-                            if attempts >= 3 {
-                                break Err(e);
-                            }
-                            tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
-                        }
-                    }
-                };
-
-                if let Ok(children) = children_result {
+                drop(_permit);
+                if let Ok(children) = client
+                    .get_item_children(server_uri, server_token, &item.rating_key)
+                    .await
+                {
                     for child in children.items {
                         let mut child_to_sync = child.clone();
                         if child.item_type == "episode" {
@@ -102,147 +85,104 @@ fn sync_item_and_children<'a>(
                         )
                         .await;
                     }
+                } else {
+                    tracing::warn!(
+                        "Sync Warning: Could not fetch seasons for show '{}'",
+                        item.title
+                    );
                 }
 
                 if item.leaf_count.unwrap_or(0) > 0 {
-                    let mut leaf_attempts = 0;
-                    let leaves_result = loop {
-                        match client
-                            .get_item_all_leaves(server_uri, server_token, &item.rating_key)
-                            .await
-                        {
-                            Ok(res) => break Ok(res),
-                            Err(e) => {
-                                leaf_attempts += 1;
-                                if leaf_attempts >= 3 {
-                                    break Err(e);
-                                }
-                                tokio::time::sleep(Duration::from_millis(500 * leaf_attempts))
-                                    .await;
-                            }
-                        }
-                    };
-
-                    match leaves_result {
-                        Ok(leaves) => {
-                            stream::iter(leaves.items)
-                                .for_each_concurrent(5, |leaf_item| {
-                                    let client_clone = client.clone();
-                                    let db_pool_clone = db_pool.clone();
-                                    let server_id_clone = server_id.to_string();
-                                    let library_key_clone = library_key.to_string();
-                                    let state_clone = state.clone();
-                                    let item_rating_key_clone = item.rating_key.clone();
-
-                                    async move {
-                                        let mut episode_item = leaf_item.clone();
-                                        if leaf_item.item_type == "episode"
-                                            && leaf_item.parent_id.is_none()
-                                        {
-                                            episode_item.parent_id = Some(item_rating_key_clone);
-                                        }
-                                        sync_item_and_children(
-                                            &state_clone,
-                                            &client_clone,
-                                            &db_pool_clone,
-                                            server_uri,
-                                            server_token,
-                                            &server_id_clone,
-                                            &library_key_clone,
-                                            &episode_item,
-                                            sync_time,
-                                        )
-                                        .await;
+                    if let Ok(leaves) = client
+                        .get_item_all_leaves(server_uri, server_token, &item.rating_key)
+                        .await
+                    {
+                        stream::iter(leaves.items)
+                            .for_each_concurrent(1, |leaf_item| {
+                                let state_c = state.clone();
+                                let client_c = client.clone();
+                                let db_p = db_pool.clone();
+                                let s_id = server_id.to_string();
+                                let l_key = library_key.to_string();
+                                let p_id = item.rating_key.clone();
+                                async move {
+                                    let mut episode_item = leaf_item.clone();
+                                    if leaf_item.item_type == "episode"
+                                        && leaf_item.parent_id.is_none()
+                                    {
+                                        episode_item.parent_id = Some(p_id);
                                     }
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to fetch all leaves for show '{}' after retries: {:?}",
-                                item.title,
-                                e
-                            );
-                        }
+                                    sync_item_and_children(
+                                        &state_c,
+                                        &client_c,
+                                        &db_p,
+                                        server_uri,
+                                        server_token,
+                                        &s_id,
+                                        &l_key,
+                                        &episode_item,
+                                        sync_time,
+                                    )
+                                    .await;
+                                }
+                            })
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            "Sync Warning: Could not fetch episodes for show '{}'",
+                            item.title
+                        );
                     }
                 }
             }
             "season" => {
-                drop(permit);
+                drop(_permit);
             }
             "movie" | "episode" => {
-                let mut attempts = 0;
-                let details_result = loop {
-                    match client
-                        .get_item_details(server_uri, server_token, &item.rating_key)
-                        .await
-                    {
-                        Ok(res) => break Ok(res),
-                        Err(e) => {
-                            attempts += 1;
-                            if attempts >= 3 {
-                                break Err(e);
-                            }
-                            tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
-                        }
-                    }
-                };
-                match details_result {
-                    Ok(Some(details)) => {
-                        if let Some(media) = details.media.first() {
-                            if let Some(part) = media.parts.first() {
-                                if let Err(e) = db::upsert_media_part(
-                                    db_pool,
-                                    part,
-                                    &item.rating_key,
-                                    server_id,
-                                    media,
-                                    sync_time,
-                                )
-                                .await
-                                {
-                                    tracing::error!(
-                                        "Failed to upsert media part for item '{}': {:?}",
-                                        item.title,
-                                        e
-                                    );
-                                } else {
-                                    stream::iter(&part.streams)
-                                        .for_each_concurrent(5, |stream| {
-                                            let db_pool_clone = db_pool.clone();
-                                            let server_id_clone = server_id.to_string();
-
-                                            async move {
-                                                if let Err(e) = db::upsert_stream(
-                                                    &db_pool_clone,
-                                                    stream,
-                                                    part.id,
-                                                    &server_id_clone,
-                                                    sync_time,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::error!(
-                                                        "Failed to upsert stream for item '{}': {:?}",
-                                                        item.title,
-                                                        e
-                                                    );
-                                                }
+                if let Ok(Some(details)) = client
+                    .get_item_details(server_uri, server_token, &item.rating_key)
+                    .await
+                {
+                    if let Some(media) = details.media.first() {
+                        if let Some(part) = media.parts.first() {
+                            if db::upsert_media_part(
+                                db_pool,
+                                part,
+                                &item.rating_key,
+                                server_id,
+                                media,
+                                sync_time,
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                stream::iter(&part.streams)
+                                    .for_each_concurrent(2, |stream| {
+                                        let db_p = db_pool.clone();
+                                        let s_id = server_id.to_string();
+                                        async move {
+                                            if let Err(e) = db::upsert_stream(
+                                                &db_p, stream, part.id, &s_id, sync_time,
+                                            )
+                                            .await {
+                                                tracing::error!("Database Error: Failed to upsert stream for part {}: {:?}", part.id, e);
                                             }
-                                        })
-                                        .await;
-                                }
+                                        }
+                                    })
+                                    .await;
                             }
                         }
                     }
-                    Ok(None) => tracing::warn!("No details found for item '{}'", item.title),
-                    Err(e) => {
-                        tracing::error!("Failed to get details for item '{}': {:?}", item.title, e)
-                    }
+                } else {
+                    tracing::warn!(
+                        "Sync Warning: Details not found for {} '{}'",
+                        item.item_type,
+                        item.title
+                    );
                 }
             }
             _ => {
-                drop(permit);
+                drop(_permit);
             }
         }
     })
@@ -259,95 +199,52 @@ async fn sync_server(
     let server_token = server.access_token.as_ref();
 
     if let (Some(conn), Some(token)) = (remote_conn, server_token) {
-        let mut attempts = 0;
-        let max_attempts = 3;
-        let mut delay = Duration::from_secs(2);
+        tracing::info!("Starting sync for server: '{}'", server.name);
+        if let Ok(library_list) = client.get_libraries(&conn.uri, token).await {
+            let _ = db::upsert_server(&db_pool, &server, true, sync_start_time).await;
 
-        let libraries_result = loop {
-            match client.get_libraries(&conn.uri, token).await {
-                Ok(libraries) => break Ok(libraries),
-                Err(e) => {
-                    attempts += 1;
-                    if attempts >= max_attempts {
-                        tracing::error!(
-                            "Server '{}' is offline after {} attempts. Marking as such. Error: {:?}",
-                            server.name,
-                            max_attempts,
-                            e
-                        );
-                        if db::upsert_server(&db_pool, &server, false, sync_start_time)
-                            .await
-                            .is_err()
-                        {
-                            tracing::error!("Failed to mark server '{}' as offline.", server.name);
-                        }
-                        break Err(e);
-                    }
-                    tracing::warn!(
-                        "Failed to connect to server '{}'. Retrying in {:?}...",
-                        server.name,
-                        delay
-                    );
-                    tokio::time::sleep(delay).await;
-                    delay *= 2;
-                }
-            }
-        };
-
-        if let Ok(library_list) = libraries_result {
-            if let Err(e) = db::upsert_server(&db_pool, &server, true, sync_start_time).await {
-                tracing::error!("Failed to mark server '{}' as online: {}", server.name, e);
-                return;
-            }
-
-            tracing::info!("Syncing server: {}", server.name);
             for library in &library_list.libraries {
                 if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
                     tracing::info!(
-                        "Syncing library: {} on server: {}",
+                        "Syncing library: '{}' on server: '{}'",
                         library.title,
                         server.name
                     );
-                    if db::upsert_library(
+                    let _ = db::upsert_library(
                         &db_pool,
                         library,
                         &server.client_identifier,
                         sync_start_time,
                     )
-                    .await
-                    .is_err()
-                    {
-                        tracing::error!("Failed to upsert library '{}'", library.title);
-                        continue;
-                    }
+                    .await;
 
-                    let items_result = client
+                    if let Ok(item_list) = client
                         .get_library_items(&conn.uri, token, &library.key)
-                        .await;
-
-                    if let Ok(item_list) = items_result {
+                        .await
+                    {
                         tracing::info!(
-                            "Found {} items in library '{}'",
+                            "Processing {} items from library '{}'",
                             item_list.items.len(),
                             library.title
                         );
-
                         stream::iter(item_list.items)
-                            .for_each_concurrent(2, |item| {
-                                let client_clone = client.clone();
-                                let db_pool_clone = db_pool.clone();
-                                let server_id_clone = server.client_identifier.clone();
-                                let library_key_clone = library.key.clone();
-                                let state_clone = state.clone();
+                            .for_each_concurrent(1, |item| {
+                                let state_c = state.clone();
+                                let client_c = client.clone();
+                                let db_p = db_pool.clone();
+                                let s_id = server.client_identifier.clone();
+                                let l_key = library.key.clone();
+                                let uri = conn.uri.clone();
+                                let tok = token.to_string();
                                 async move {
                                     sync_item_and_children(
-                                        &state_clone,
-                                        &client_clone,
-                                        &db_pool_clone,
-                                        &conn.uri,
-                                        token,
-                                        &server_id_clone,
-                                        &library_key_clone,
+                                        &state_c,
+                                        &client_c,
+                                        &db_p,
+                                        &uri,
+                                        &tok,
+                                        &s_id,
+                                        &l_key,
                                         &item,
                                         sync_start_time,
                                     )
@@ -356,41 +253,43 @@ async fn sync_server(
                             })
                             .await;
                     } else {
-                        tracing::error!("FAILED to get items for library '{}'", library.title);
+                        tracing::error!(
+                            "Fetch Error: Failed to get items for library '{}'",
+                            library.title
+                        );
                     }
                 }
             }
-
-            tracing::info!("Successfully synced server '{}'", server.name);
+            tracing::info!("Finished sync for server: '{}'", server.name);
+        } else {
+            tracing::error!(
+                "Connection Error: Failed to reach libraries for server '{}'",
+                server.name
+            );
         }
     } else {
         tracing::warn!(
-            "Skipping server '{}' (no remote connection or token).",
+            "Skip: Server '{}' has no valid remote connection or token",
             server.name
         );
-        if db::upsert_server(&db_pool, &server, false, sync_start_time)
-            .await
-            .is_err()
-        {
-            tracing::error!("Failed to mark server '{}' as offline.", server.name);
-        }
     }
 }
 
 async fn run_database_sync(app_state: &web::Data<AppState>) {
+    let start_instant = Instant::now();
     let sync_start_time = chrono::Utc::now();
     let client = app_state.plex_client.clone();
     let db_pool = app_state.db_pool.clone();
 
+    tracing::info!("Initiating database sync run at {}", sync_start_time);
+
     if let Err(e) = client.ensure_logged_in().await {
-        tracing::error!("Failed to log in to Plex: {:?}", e);
+        tracing::error!("Auth Error: Failed Plex login. Sync aborted: {:?}", e);
         return;
     }
 
-    let servers_result = client.get_servers().await;
-
-    if let Ok(servers) = servers_result {
-        tracing::info!("Syncing {} online servers...", servers.len());
+    if let Ok(servers) = client.get_servers().await {
+        tracing::info!("Discovered {} servers to sync", servers.len());
         stream::iter(servers)
             .for_each_concurrent(1, |server| {
                 sync_server(
@@ -403,26 +302,33 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
             })
             .await;
     } else {
-        tracing::error!("Failed to get initial server list.");
+        tracing::error!("Network Error: Failed to retrieve server list from Plex API");
     }
 
-    tracing::info!("Sync loop finished. Pruning old data...");
+    tracing::info!("Sync complete. Pruning orphaned data...");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
-        tracing::error!("Failed to prune old data: {:?}", e);
+        tracing::error!("Database Error: Data pruning failed: {:?}", e);
     }
+
+    let duration = start_instant.elapsed();
+    tracing::info!(
+        "Database sync run finished successfully. Total duration: {}.{:03}s",
+        duration.as_secs(),
+        duration.subsec_millis()
+    );
 }
 
 async fn database_sync_scheduler(app_state: web::Data<AppState>) {
-    tracing::info!("Performing initial database sync on startup...");
+    tracing::info!("Service started. Performing initial database sync...");
     run_database_sync(&app_state).await;
-    tracing::info!("Initial sync complete. Starting scheduled runs.");
 
     let mut interval = tokio::time::interval(Duration::from_secs(60 * 60 * SYNC_INTERVAL_HOURS));
+
     interval.tick().await;
 
     loop {
+        tracing::info!("Next scheduled sync in {} hours.", SYNC_INTERVAL_HOURS);
         interval.tick().await;
-        tracing::info!("Starting scheduled database sync...");
         run_database_sync(&app_state).await;
     }
 }
@@ -434,37 +340,37 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    tracing::info!("Starting backend...");
+
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_pool = PgPoolOptions::new()
-        .max_connections(15)
+        .max_connections(10)
         .connect(&database_url)
         .await
         .expect("Failed to connect to Postgres.");
-    tracing::info!("Successfully connected to database.");
 
-    let plex_client = PlexClient::new();
-
-    let image_cache = Cache::builder()
-        .max_capacity(500 * 1024 * 1024)
-        .time_to_live(Duration::from_secs(12 * 60 * 60))
-        .build();
+    tracing::info!("Postgres connected.");
 
     let app_state = web::Data::new(AppState {
-        plex_client: plex_client.clone(),
+        plex_client: PlexClient::new(),
         db_pool: db_pool.clone(),
-        image_cache,
-        sync_semaphore: Arc::new(Semaphore::new(4)),
+        image_cache: Cache::builder()
+            .max_capacity(500 * 1024 * 1024)
+            .time_to_live(Duration::from_secs(12 * 60 * 60))
+            .build(),
+        sync_semaphore: Arc::new(Semaphore::new(3)),
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));
-    tracing::info!("Backend server starting on http://0.0.0.0:3001");
+
+    tracing::info!("HTTP server starting on 0.0.0.0:3001");
 
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .configure(routes::configure)
     })
-    .workers(4)
+    .workers(2)
     .bind(("0.0.0.0", 3001))?
     .run()
     .await
