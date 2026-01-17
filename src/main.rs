@@ -65,9 +65,20 @@ fn sync_item_and_children<'a>(
         match item.item_type.as_str() {
             "show" => {
                 drop(permit);
-                let mut children_result = client
-                    .get_item_children(server_uri, server_token, &item.rating_key)
-                    .await;
+                let mut attempts = 0;
+                let mut children_result = loop {
+                    match client.get_item_children(server_uri, server_token, &item.rating_key).await {
+                        Ok(res) => break Ok(res),
+                        Err(e) => {
+                            attempts += 1;
+                            if attempts >= 3 {
+                                break Err(e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
+                        }
+                    }
+                };
+                
                 let mut use_fallback = false;
                 if let Ok(children) = &children_result {
                     if children.items.is_empty()
@@ -81,9 +92,19 @@ fn sync_item_and_children<'a>(
                         "'{}' appears flattened or empty. Using /allLeaves.",
                         item.title
                     );
-                    children_result = client
-                        .get_item_all_leaves(server_uri, server_token, &item.rating_key)
-                        .await;
+                    let mut leaf_attempts = 0;
+                    children_result = loop {
+                        match client.get_item_all_leaves(server_uri, server_token, &item.rating_key).await {
+                            Ok(res) => break Ok(res),
+                            Err(e) => {
+                                leaf_attempts += 1;
+                                if leaf_attempts >= 3 {
+                                    break Err(e);
+                                }
+                                tokio::time::sleep(Duration::from_millis(500 * leaf_attempts)).await;
+                            }
+                        }
+                    };
                 }
                 match children_result {
                     Ok(children) => {
@@ -97,11 +118,7 @@ fn sync_item_and_children<'a>(
 
                                 async move {
                                     let mut episode_item = child_item.clone();
-                                    if child_item.item_type == "episode" && use_fallback {
-                                        episode_item.parent_id = Some(item_rating_key_clone);
-                                    } else if child_item.item_type == "episode"
-                                        && episode_item.parent_id.is_none()
-                                    {
+                                    if child_item.item_type == "episode" {
                                         episode_item.parent_id = Some(item_rating_key_clone);
                                     }
                                     sync_item_and_children(
@@ -131,9 +148,20 @@ fn sync_item_and_children<'a>(
             }
             "season" => {
                 drop(permit);
-                let children_result = client
-                    .get_item_children(server_uri, server_token, &item.rating_key)
-                    .await;
+                let mut attempts = 0;
+                let mut children_result = loop {
+                    match client
+                        .get_item_children(server_uri, server_token, &item.rating_key).await {
+                            Ok(res) => break Ok(res),
+                            Err(e) => {
+                                attempts += 1;
+                                if attempts >= 3 {
+                                    break Err(e);
+                                }
+                                tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
+                            }
+                        }
+                };
                 match children_result {
                     Ok(children) => {
                         stream::iter(children.items)
@@ -447,7 +475,7 @@ async fn main() -> Result<()> {
         plex_client: plex_client.clone(),
         db_pool: db_pool.clone(),
         image_cache,
-        sync_semaphore: Arc::new(Semaphore::new(25)),
+        sync_semaphore: Arc::new(Semaphore::new(12)),
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));

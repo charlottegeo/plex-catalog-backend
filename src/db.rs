@@ -217,6 +217,7 @@ pub async fn upsert_media_part(
     media: &Media,
     sync_time: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
+    let resolution = media.video_resolution.as_deref().unwrap_or("Unknown");
     sqlx::query!(
         r#"
         INSERT INTO media_parts (id, item_id, server_id, video_resolution, last_seen)
@@ -228,7 +229,7 @@ pub async fn upsert_media_part(
         part.id,
         item_id,
         server_id,
-        media.video_resolution,
+        resolution,
         sync_time
     )
     .execute(pool)

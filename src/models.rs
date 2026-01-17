@@ -126,7 +126,7 @@ pub struct ItemWithDetails {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Media {
     #[serde(rename = "videoResolution")]
-    pub video_resolution: String,
+    pub video_resolution: Option<String>,
     #[serde(rename = "Part", default)]
     pub parts: Vec<Part>,
 }
