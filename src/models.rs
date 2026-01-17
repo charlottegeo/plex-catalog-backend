@@ -169,7 +169,7 @@ pub struct SearchResult {
     pub thumb_path: Option<String>,
     pub server_id: String,
     pub server_name: String,
-    #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub rank: Option<f32>,
 }
 

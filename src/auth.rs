@@ -223,6 +223,7 @@ impl CSHAuth {
         }
     }
 
+    #[allow(dead_code)]
     pub fn disabled() -> Self {
         Self { enabled: false }
     }

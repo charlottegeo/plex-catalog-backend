@@ -26,6 +26,7 @@ const SYNC_INTERVAL_HOURS: u64 = 12;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 
 //Shared application state
+#[derive(Clone)]
 pub struct AppState {
     pub plex_client: PlexClient,
     pub db_pool: sqlx::PgPool,
@@ -66,8 +67,11 @@ fn sync_item_and_children<'a>(
             "show" => {
                 drop(permit);
                 let mut attempts = 0;
-                let mut children_result = loop {
-                    match client.get_item_children(server_uri, server_token, &item.rating_key).await {
+                let children_result = loop {
+                    match client
+                        .get_item_children(server_uri, server_token, &item.rating_key)
+                        .await
+                    {
                         Ok(res) => break Ok(res),
                         Err(e) => {
                             attempts += 1;
@@ -78,123 +82,93 @@ fn sync_item_and_children<'a>(
                         }
                     }
                 };
-                
-                let mut use_fallback = false;
-                if let Ok(children) = &children_result {
-                    if children.items.is_empty()
-                        || children.items.iter().any(|i| i.item_type == "episode")
-                    {
-                        use_fallback = true;
+
+                if let Ok(children) = children_result {
+                    for child in children.items {
+                        let mut child_to_sync = child.clone();
+                        if child.item_type == "episode" {
+                            child_to_sync.parent_id = Some(item.rating_key.clone());
+                        }
+                        sync_item_and_children(
+                            state,
+                            client,
+                            db_pool,
+                            server_uri,
+                            server_token,
+                            server_id,
+                            library_key,
+                            &child_to_sync,
+                            sync_time,
+                        )
+                        .await;
                     }
                 }
-                if use_fallback {
-                    tracing::info!(
-                        "'{}' appears flattened or empty. Using /allLeaves.",
-                        item.title
-                    );
+
+                if item.leaf_count.unwrap_or(0) > 0 {
                     let mut leaf_attempts = 0;
-                    children_result = loop {
-                        match client.get_item_all_leaves(server_uri, server_token, &item.rating_key).await {
+                    let leaves_result = loop {
+                        match client
+                            .get_item_all_leaves(server_uri, server_token, &item.rating_key)
+                            .await
+                        {
                             Ok(res) => break Ok(res),
                             Err(e) => {
                                 leaf_attempts += 1;
                                 if leaf_attempts >= 3 {
                                     break Err(e);
                                 }
-                                tokio::time::sleep(Duration::from_millis(500 * leaf_attempts)).await;
+                                tokio::time::sleep(Duration::from_millis(500 * leaf_attempts))
+                                    .await;
                             }
                         }
                     };
-                }
-                match children_result {
-                    Ok(children) => {
-                        stream::iter(children.items)
-                            .for_each_concurrent(5, |child_item| {
-                                let client_clone = client.clone();
-                                let db_pool_clone = db_pool.clone();
-                                let server_id_clone = server_id.to_string();
-                                let library_key_clone = library_key.to_string();
-                                let item_rating_key_clone = item.rating_key.clone();
 
-                                async move {
-                                    let mut episode_item = child_item.clone();
-                                    if child_item.item_type == "episode" {
-                                        episode_item.parent_id = Some(item_rating_key_clone);
+                    match leaves_result {
+                        Ok(leaves) => {
+                            stream::iter(leaves.items)
+                                .for_each_concurrent(5, |leaf_item| {
+                                    let client_clone = client.clone();
+                                    let db_pool_clone = db_pool.clone();
+                                    let server_id_clone = server_id.to_string();
+                                    let library_key_clone = library_key.to_string();
+                                    let state_clone = state.clone();
+                                    let item_rating_key_clone = item.rating_key.clone();
+
+                                    async move {
+                                        let mut episode_item = leaf_item.clone();
+                                        if leaf_item.item_type == "episode"
+                                            && leaf_item.parent_id.is_none()
+                                        {
+                                            episode_item.parent_id = Some(item_rating_key_clone);
+                                        }
+                                        sync_item_and_children(
+                                            &state_clone,
+                                            &client_clone,
+                                            &db_pool_clone,
+                                            server_uri,
+                                            server_token,
+                                            &server_id_clone,
+                                            &library_key_clone,
+                                            &episode_item,
+                                            sync_time,
+                                        )
+                                        .await;
                                     }
-                                    sync_item_and_children(
-                                        state,
-                                        &client_clone,
-                                        &db_pool_clone,
-                                        server_uri,
-                                        server_token,
-                                        &server_id_clone,
-                                        &library_key_clone,
-                                        &episode_item,
-                                        sync_time,
-                                    )
-                                    .await;
-                                }
-                            })
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to get children for show '{}': {:?}",
-                            item.title,
-                            e
-                        );
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to fetch all leaves for show '{}' after retries: {:?}",
+                                item.title,
+                                e
+                            );
+                        }
                     }
                 }
             }
             "season" => {
                 drop(permit);
-                let mut attempts = 0;
-                let mut children_result = loop {
-                    match client
-                        .get_item_children(server_uri, server_token, &item.rating_key).await {
-                            Ok(res) => break Ok(res),
-                            Err(e) => {
-                                attempts += 1;
-                                if attempts >= 3 {
-                                    break Err(e);
-                                }
-                                tokio::time::sleep(Duration::from_millis(500 * attempts)).await;
-                            }
-                        }
-                };
-                match children_result {
-                    Ok(children) => {
-                        stream::iter(children.items)
-                            .for_each_concurrent(5, |child_item| {
-                                let client_clone = client.clone();
-                                let db_pool_clone = db_pool.clone();
-                                let server_id_clone = server_id.to_string();
-                                let library_key_clone = library_key.to_string();
-                                async move {
-                                    sync_item_and_children(
-                                        state,
-                                        &client_clone,
-                                        &db_pool_clone,
-                                        server_uri,
-                                        server_token,
-                                        &server_id_clone,
-                                        &library_key_clone,
-                                        &child_item,
-                                        sync_time,
-                                    )
-                                    .await;
-                                }
-                            })
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to get children for season '{}': {:?}",
-                            item.title,
-                            e
-                        );
-                    }
-                }
             }
             "movie" | "episode" => {
                 let mut attempts = 0;
@@ -329,7 +303,11 @@ async fn sync_server(
             tracing::info!("Syncing server: {}", server.name);
             for library in &library_list.libraries {
                 if SUPPORTED_LIBRARY_TYPES.contains(&library.library_type.as_str()) {
-                    tracing::info!("Syncing library: {}", library.title);
+                    tracing::info!(
+                        "Syncing library: {} on server: {}",
+                        library.title,
+                        server.name
+                    );
                     if db::upsert_library(
                         &db_pool,
                         library,
