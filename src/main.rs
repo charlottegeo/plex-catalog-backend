@@ -63,27 +63,42 @@ fn sync_item_and_children<'a>(
         match item.item_type.as_str() {
             "show" => {
                 drop(_permit);
-                if let Ok(children) = client
-                    .get_item_children(server_uri, server_token, &item.rating_key)
-                    .await
-                {
-                    for child in children.items {
-                        let mut child_to_sync = child.clone();
-                        if child.item_type == "episode" {
-                            child_to_sync.parent_id = Some(item.rating_key.clone());
-                        }
-                        sync_item_and_children(
-                            state,
-                            client,
-                            db_pool,
-                            server_uri,
-                            server_token,
-                            server_id,
-                            library_key,
-                            &child_to_sync,
-                            sync_time,
-                        )
-                        .await;
+                let (children_result, leaves_result) = tokio::join!(
+                    client.get_item_children(server_uri, server_token, &item.rating_key),
+                    client.get_item_all_leaves(server_uri, server_token, &item.rating_key)
+                );
+
+                if let Ok(children) = children_result {
+                    if !children.items.is_empty() {
+                        stream::iter(children.items)
+                            .for_each_concurrent(3, |child| {
+                                let state_c = state.clone();
+                                let client_c = client.clone();
+                                let db_p = db_pool.clone();
+                                let s_id = server_id.to_string();
+                                let l_key = library_key.to_string();
+                                let uri = server_uri.to_string();
+                                let tok = server_token.to_string();
+                                let mut child_to_sync = child.clone();
+                                if child.item_type == "episode" {
+                                    child_to_sync.parent_id = Some(item.rating_key.clone());
+                                }
+                                async move {
+                                    sync_item_and_children(
+                                        &state_c,
+                                        &client_c,
+                                        &db_p,
+                                        &uri,
+                                        &tok,
+                                        &s_id,
+                                        &l_key,
+                                        &child_to_sync,
+                                        sync_time,
+                                    )
+                                    .await;
+                                }
+                            })
+                            .await;
                     }
                 } else {
                     tracing::warn!(
@@ -92,23 +107,22 @@ fn sync_item_and_children<'a>(
                     );
                 }
 
-                if item.leaf_count.unwrap_or(0) > 0 {
-                    if let Ok(leaves) = client
-                        .get_item_all_leaves(server_uri, server_token, &item.rating_key)
-                        .await
-                    {
+                if let Ok(leaves) = leaves_result {
+                    if !leaves.items.is_empty() {
                         stream::iter(leaves.items)
-                            .for_each_concurrent(1, |leaf_item| {
+                            .for_each_concurrent(5, |leaf_item| {
                                 let state_c = state.clone();
                                 let client_c = client.clone();
                                 let db_p = db_pool.clone();
                                 let s_id = server_id.to_string();
                                 let l_key = library_key.to_string();
+                                let uri = server_uri.to_string();
+                                let tok = server_token.to_string();
                                 let p_id = item.rating_key.clone();
                                 async move {
                                     let mut episode_item = leaf_item.clone();
                                     if leaf_item.item_type == "episode"
-                                        && leaf_item.parent_id.is_none()
+                                        && episode_item.parent_id.is_none()
                                     {
                                         episode_item.parent_id = Some(p_id);
                                     }
@@ -116,8 +130,8 @@ fn sync_item_and_children<'a>(
                                         &state_c,
                                         &client_c,
                                         &db_p,
-                                        server_uri,
-                                        server_token,
+                                        &uri,
+                                        &tok,
                                         &s_id,
                                         &l_key,
                                         &episode_item,
@@ -127,12 +141,12 @@ fn sync_item_and_children<'a>(
                                 }
                             })
                             .await;
-                    } else {
-                        tracing::warn!(
-                            "Sync Warning: Could not fetch episodes for show '{}'",
-                            item.title
-                        );
                     }
+                } else {
+                    tracing::warn!(
+                        "Sync Warning: Could not fetch episodes for show '{}'",
+                        item.title
+                    );
                 }
             }
             "season" => {
@@ -228,7 +242,7 @@ async fn sync_server(
                             library.title
                         );
                         stream::iter(item_list.items)
-                            .for_each_concurrent(1, |item| {
+                            .for_each_concurrent(3, |item| {
                                 let state_c = state.clone();
                                 let client_c = client.clone();
                                 let db_p = db_pool.clone();
@@ -358,7 +372,7 @@ async fn main() -> Result<()> {
             .max_capacity(500 * 1024 * 1024)
             .time_to_live(Duration::from_secs(12 * 60 * 60))
             .build(),
-        sync_semaphore: Arc::new(Semaphore::new(3)),
+        sync_semaphore: Arc::new(Semaphore::new(5)),
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));
