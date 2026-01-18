@@ -37,6 +37,13 @@ struct EpisodeWithVersion {
     subtitle_language: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ItemWithContext {
+    pub item: Item,
+    pub library_id: String,
+    pub server_id: String,
+}
+
 pub async fn get_all_servers(pool: &PgPool) -> Result<Vec<DbServer>, sqlx::Error> {
     sqlx::query_as!(
         DbServer,
@@ -209,6 +216,81 @@ pub async fn upsert_item(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn upsert_items_batch(
+    pool: &PgPool,
+    items: &[ItemWithContext],
+    sync_time: DateTime<Utc>,
+) -> Result<usize, sqlx::Error> {
+    if items.is_empty() {
+        return Ok(0);
+    }
+
+    let ids: Vec<String> = items.iter().map(|i| i.item.rating_key.clone()).collect();
+    let library_ids: Vec<String> = items.iter().map(|i| i.library_id.clone()).collect();
+    let server_ids: Vec<String> = items.iter().map(|i| i.server_id.clone()).collect();
+    let parent_ids: Vec<Option<String>> = items.iter().map(|i| i.item.parent_id.clone()).collect();
+    let titles: Vec<String> = items.iter().map(|i| i.item.title.clone()).collect();
+    let summaries: Vec<Option<String>> =
+        items.iter().map(|i| Some(i.item.summary.clone())).collect();
+    let item_types: Vec<String> = items.iter().map(|i| i.item.item_type.clone()).collect();
+    let years: Vec<i16> = items.iter().map(|i| i.item.year as i16).collect();
+    let thumb_paths: Vec<Option<String>> = items.iter().map(|i| i.item.thumb.clone()).collect();
+    let art_paths: Vec<Option<String>> = items.iter().map(|i| i.item.art.clone()).collect();
+    let guids: Vec<Option<String>> = items.iter().map(|i| i.item.guid.clone()).collect();
+    let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
+    let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
+        SELECT * FROM UNNEST(
+            $1::text[],
+            $2::text[],
+            $3::text[],
+            $4::text[],
+            $5::text[],
+            $6::text[],
+            $7::text[],
+            $8::smallint[],
+            $9::text[],
+            $10::text[],
+            $11::timestamptz,
+            $12::text[],
+            $13::integer[],
+            $14::integer[]
+        ) AS t(id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
+        ON CONFLICT (id, server_id) DO UPDATE SET
+            last_seen = EXCLUDED.last_seen,
+            title = CASE WHEN items.title IS DISTINCT FROM EXCLUDED.title THEN EXCLUDED.title ELSE items.title END,
+            summary = CASE WHEN items.summary IS DISTINCT FROM EXCLUDED.summary THEN EXCLUDED.summary ELSE items.summary END,
+            year = CASE WHEN items.year IS DISTINCT FROM EXCLUDED.year THEN EXCLUDED.year ELSE items.year END,
+            thumb_path = CASE WHEN items.thumb_path IS DISTINCT FROM EXCLUDED.thumb_path THEN EXCLUDED.thumb_path ELSE items.thumb_path END,
+            art_path = CASE WHEN items.art_path IS DISTINCT FROM EXCLUDED.art_path THEN EXCLUDED.art_path ELSE items.art_path END,
+            guid = CASE WHEN items.guid IS DISTINCT FROM EXCLUDED.guid THEN EXCLUDED.guid ELSE items.guid END,
+            index = CASE WHEN items.index IS DISTINCT FROM EXCLUDED.index THEN EXCLUDED.index ELSE items.index END,
+            leaf_count = CASE WHEN items.leaf_count IS DISTINCT FROM EXCLUDED.leaf_count THEN EXCLUDED.leaf_count ELSE items.leaf_count END
+        "#,
+    )
+    .bind(&ids[..])
+    .bind(&library_ids[..])
+    .bind(&server_ids[..])
+    .bind(&parent_ids[..])
+    .bind(&titles[..])
+    .bind(&summaries[..])
+    .bind(&item_types[..])
+    .bind(&years[..])
+    .bind(&thumb_paths[..])
+    .bind(&art_paths[..])
+    .bind(sync_time)
+    .bind(&guids[..])
+    .bind(&indices[..])
+    .bind(&leaf_counts[..])
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() as usize)
 }
 
 pub async fn upsert_media_part(

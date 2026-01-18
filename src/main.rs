@@ -6,11 +6,11 @@ use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
 use std::future::Future;
-use std::io::Result;
 use std::pin::Pin;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 mod auth;
 mod db;
@@ -21,6 +21,7 @@ mod routes;
 
 const SYNC_INTERVAL_HOURS: u64 = 12;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
+const BATCH_SIZE: usize = 75;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -28,6 +29,57 @@ pub struct AppState {
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, Bytes>,
     pub sync_semaphore: Arc<Semaphore>,
+}
+
+async fn flush_item_buffer(
+    buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
+    db_pool: &sqlx::PgPool,
+    sync_time: chrono::DateTime<chrono::Utc>,
+) -> StdResult<usize, sqlx::Error> {
+    let items = {
+        let mut buf = buffer.lock().await;
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        buf.drain(..).collect::<Vec<_>>()
+    };
+
+    let count = items.len();
+    let mut attempts = 0;
+    let max_attempts = 3;
+
+    while attempts < max_attempts {
+        match db::upsert_items_batch(db_pool, &items, sync_time).await {
+            Ok(_) => {
+                tracing::info!("Successfully batch upserted {} items", count);
+                return Ok(count);
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts >= max_attempts {
+                    tracing::error!(
+                        "Critical Database Error: Failed to flush batch of {} items after {} attempts: {:?}",
+                        count,
+                        max_attempts,
+                        e
+                    );
+                    return Err(e);
+                }
+
+                let backoff = Duration::from_secs(2u64.pow(attempts as u32));
+                tracing::warn!(
+                    "Database Warning: Batch upsert failed (attempt {}/{}). Retrying in {:?}... Error: {:?}",
+                    attempts,
+                    max_attempts,
+                    backoff,
+                    e
+                );
+                tokio::time::sleep(backoff).await;
+            }
+        }
+    }
+
+    Ok(count)
 }
 
 fn sync_item_and_children<'a>(
@@ -40,6 +92,7 @@ fn sync_item_and_children<'a>(
     library_key: &'a str,
     item: &'a Item,
     sync_time: chrono::DateTime<chrono::Utc>,
+    item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
         let _permit = match state.sync_semaphore.acquire().await {
@@ -50,14 +103,20 @@ fn sync_item_and_children<'a>(
             }
         };
 
-        if let Err(e) = db::upsert_item(db_pool, item, library_key, server_id, sync_time).await {
-            tracing::error!(
-                "Database Error: Failed to upsert item '{}' (Type: {}): {:?}",
-                item.title,
-                item.item_type,
-                e
-            );
-            return;
+        {
+            let mut buf = item_buffer.lock().await;
+            buf.push(db::ItemWithContext {
+                item: item.clone(),
+                library_id: library_key.to_string(),
+                server_id: server_id.to_string(),
+            });
+
+            if buf.len() >= BATCH_SIZE {
+                drop(buf);
+                if let Err(e) = flush_item_buffer(item_buffer.clone(), db_pool, sync_time).await {
+                    tracing::error!("Database Error: Failed to flush item buffer: {:?}", e);
+                }
+            }
         }
 
         match item.item_type.as_str() {
@@ -79,6 +138,7 @@ fn sync_item_and_children<'a>(
                                 let l_key = library_key.to_string();
                                 let uri = server_uri.to_string();
                                 let tok = server_token.to_string();
+                                let buf = item_buffer.clone();
                                 let mut child_to_sync = child.clone();
                                 if child.item_type == "episode" {
                                     child_to_sync.parent_id = Some(item.rating_key.clone());
@@ -94,6 +154,7 @@ fn sync_item_and_children<'a>(
                                         &l_key,
                                         &child_to_sync,
                                         sync_time,
+                                        buf,
                                     )
                                     .await;
                                 }
@@ -118,6 +179,7 @@ fn sync_item_and_children<'a>(
                                 let l_key = library_key.to_string();
                                 let uri = server_uri.to_string();
                                 let tok = server_token.to_string();
+                                let buf = item_buffer.clone();
                                 let p_id = item.rating_key.clone();
                                 async move {
                                     let mut episode_item = leaf_item.clone();
@@ -136,6 +198,7 @@ fn sync_item_and_children<'a>(
                                         &l_key,
                                         &episode_item,
                                         sync_time,
+                                        buf,
                                     )
                                     .await;
                                 }
@@ -241,6 +304,9 @@ async fn sync_server(
                             item_list.items.len(),
                             library.title
                         );
+
+                        let item_buffer = Arc::new(Mutex::new(Vec::<db::ItemWithContext>::new()));
+
                         stream::iter(item_list.items)
                             .for_each_concurrent(3, |item| {
                                 let state_c = state.clone();
@@ -250,6 +316,7 @@ async fn sync_server(
                                 let l_key = library.key.clone();
                                 let uri = conn.uri.clone();
                                 let tok = token.to_string();
+                                let buf = item_buffer.clone();
                                 async move {
                                     sync_item_and_children(
                                         &state_c,
@@ -261,11 +328,22 @@ async fn sync_server(
                                         &l_key,
                                         &item,
                                         sync_start_time,
+                                        buf,
                                     )
                                     .await;
                                 }
                             })
                             .await;
+
+                        if let Err(e) =
+                            flush_item_buffer(item_buffer, &db_pool, sync_start_time).await
+                        {
+                            tracing::error!(
+                                "Database Error: Failed to flush final item buffer for library '{}': {:?}",
+                                library.title,
+                                e
+                            );
+                        }
                     } else {
                         tracing::error!(
                             "Fetch Error: Failed to get items for library '{}'",
@@ -348,7 +426,7 @@ async fn database_sync_scheduler(app_state: web::Data<AppState>) {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
