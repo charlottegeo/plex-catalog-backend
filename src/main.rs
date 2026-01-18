@@ -5,12 +5,11 @@ use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
-use std::future::Future;
-use std::pin::Pin;
 use std::result::Result as StdResult;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 mod auth;
 mod db;
@@ -22,6 +21,7 @@ mod routes;
 const SYNC_INTERVAL_HOURS: u64 = 12;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const BATCH_SIZE: usize = 75;
+const WORKER_COUNT: usize = 4;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -29,6 +29,26 @@ pub struct AppState {
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, Bytes>,
     pub sync_semaphore: Arc<Semaphore>,
+}
+
+#[derive(Debug, Clone)]
+enum SyncTask {
+    SyncItem {
+        item: Item,
+        server_uri: String,
+        server_token: String,
+        server_id: String,
+        library_key: String,
+        sync_time: chrono::DateTime<chrono::Utc>,
+    },
+    SyncItemDetails {
+        item: Item,
+        server_uri: String,
+        server_token: String,
+        server_id: String,
+        sync_time: chrono::DateTime<chrono::Utc>,
+    },
+    Shutdown,
 }
 
 async fn flush_item_buffer(
@@ -82,187 +102,244 @@ async fn flush_item_buffer(
     Ok(count)
 }
 
-fn sync_item_and_children<'a>(
-    state: &'a AppState,
-    client: &'a PlexClient,
-    db_pool: &'a sqlx::PgPool,
-    server_uri: &'a str,
-    server_token: &'a str,
-    server_id: &'a str,
-    library_key: &'a str,
-    item: &'a Item,
-    sync_time: chrono::DateTime<chrono::Utc>,
+async fn process_sync_task(
+    task: SyncTask,
+    state: &AppState,
+    task_sender: &mpsc::Sender<SyncTask>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
-) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-    Box::pin(async move {
-        let _permit = match state.sync_semaphore.acquire().await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("Critical: Sync semaphore closed unexpectedly: {:?}", e);
-                return;
-            }
-        };
-
-        {
-            let mut buf = item_buffer.lock().await;
-            buf.push(db::ItemWithContext {
-                item: item.clone(),
-                library_id: library_key.to_string(),
-                server_id: server_id.to_string(),
-            });
-
-            if buf.len() >= BATCH_SIZE {
-                drop(buf);
-                if let Err(e) = flush_item_buffer(item_buffer.clone(), db_pool, sync_time).await {
-                    tracing::error!("Database Error: Failed to flush item buffer: {:?}", e);
-                }
-            }
+    pending_work: Arc<AtomicU64>,
+) {
+    let _permit = match state.sync_semaphore.acquire().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Critical: Sync semaphore closed unexpectedly: {:?}", e);
+            pending_work.fetch_sub(1, Ordering::Relaxed);
+            return;
         }
+    };
 
-        match item.item_type.as_str() {
-            "show" => {
-                drop(_permit);
-                let (children_result, leaves_result) = tokio::join!(
-                    client.get_item_children(server_uri, server_token, &item.rating_key),
-                    client.get_item_all_leaves(server_uri, server_token, &item.rating_key)
-                );
+    match task {
+        SyncTask::SyncItem {
+            item,
+            server_uri,
+            server_token,
+            server_id,
+            library_key,
+            sync_time,
+        } => {
+            {
+                let mut buf = item_buffer.lock().await;
+                buf.push(db::ItemWithContext {
+                    item: item.clone(),
+                    library_id: library_key.clone(),
+                    server_id: server_id.clone(),
+                });
 
-                if let Ok(children) = children_result {
-                    if !children.items.is_empty() {
-                        stream::iter(children.items)
-                            .for_each_concurrent(3, |child| {
-                                let state_c = state.clone();
-                                let client_c = client.clone();
-                                let db_p = db_pool.clone();
-                                let s_id = server_id.to_string();
-                                let l_key = library_key.to_string();
-                                let uri = server_uri.to_string();
-                                let tok = server_token.to_string();
-                                let buf = item_buffer.clone();
-                                let mut child_to_sync = child.clone();
-                                if child.item_type == "episode" {
-                                    child_to_sync.parent_id = Some(item.rating_key.clone());
-                                }
-                                async move {
-                                    sync_item_and_children(
-                                        &state_c,
-                                        &client_c,
-                                        &db_p,
-                                        &uri,
-                                        &tok,
-                                        &s_id,
-                                        &l_key,
-                                        &child_to_sync,
-                                        sync_time,
-                                        buf,
-                                    )
-                                    .await;
-                                }
-                            })
-                            .await;
+                if buf.len() >= BATCH_SIZE {
+                    drop(buf);
+                    if let Err(e) =
+                        flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time).await
+                    {
+                        tracing::error!("Database Error: Failed to flush item buffer: {:?}", e);
                     }
-                } else {
-                    tracing::warn!(
-                        "Sync Warning: Could not fetch seasons for show '{}'",
-                        item.title
-                    );
-                }
-
-                if let Ok(leaves) = leaves_result {
-                    if !leaves.items.is_empty() {
-                        stream::iter(leaves.items)
-                            .for_each_concurrent(5, |leaf_item| {
-                                let state_c = state.clone();
-                                let client_c = client.clone();
-                                let db_p = db_pool.clone();
-                                let s_id = server_id.to_string();
-                                let l_key = library_key.to_string();
-                                let uri = server_uri.to_string();
-                                let tok = server_token.to_string();
-                                let buf = item_buffer.clone();
-                                let p_id = item.rating_key.clone();
-                                async move {
-                                    let mut episode_item = leaf_item.clone();
-                                    if leaf_item.item_type == "episode"
-                                        && episode_item.parent_id.is_none()
-                                    {
-                                        episode_item.parent_id = Some(p_id);
-                                    }
-                                    sync_item_and_children(
-                                        &state_c,
-                                        &client_c,
-                                        &db_p,
-                                        &uri,
-                                        &tok,
-                                        &s_id,
-                                        &l_key,
-                                        &episode_item,
-                                        sync_time,
-                                        buf,
-                                    )
-                                    .await;
-                                }
-                            })
-                            .await;
-                    }
-                } else {
-                    tracing::warn!(
-                        "Sync Warning: Could not fetch episodes for show '{}'",
-                        item.title
-                    );
                 }
             }
-            "season" => {
-                drop(_permit);
-            }
-            "movie" | "episode" => {
-                if let Ok(Some(details)) = client
-                    .get_item_details(server_uri, server_token, &item.rating_key)
-                    .await
-                {
-                    if let Some(media) = details.media.first() {
-                        if let Some(part) = media.parts.first() {
-                            if db::upsert_media_part(
-                                db_pool,
-                                part,
-                                &item.rating_key,
-                                server_id,
-                                media,
-                                sync_time,
-                            )
-                            .await
-                            .is_ok()
+
+            match item.item_type.as_str() {
+                "show" => {
+                    drop(_permit);
+                    let (children_result, leaves_result) = tokio::join!(
+                        state.plex_client.get_item_children(
+                            &server_uri,
+                            &server_token,
+                            &item.rating_key
+                        ),
+                        state.plex_client.get_item_all_leaves(
+                            &server_uri,
+                            &server_token,
+                            &item.rating_key
+                        )
+                    );
+
+                    if let Ok(children) = children_result {
+                        for child in children.items {
+                            let mut child_to_sync = child.clone();
+                            if child.item_type == "episode" {
+                                child_to_sync.parent_id = Some(item.rating_key.clone());
+                            }
+
+                            pending_work.fetch_add(1, Ordering::Relaxed);
+                            if task_sender
+                                .send(SyncTask::SyncItem {
+                                    item: child_to_sync,
+                                    server_uri: server_uri.clone(),
+                                    server_token: server_token.clone(),
+                                    server_id: server_id.clone(),
+                                    library_key: library_key.clone(),
+                                    sync_time,
+                                })
+                                .await
+                                .is_err()
                             {
-                                stream::iter(&part.streams)
-                                    .for_each_concurrent(2, |stream| {
-                                        let db_p = db_pool.clone();
-                                        let s_id = server_id.to_string();
-                                        async move {
-                                            if let Err(e) = db::upsert_stream(
-                                                &db_p, stream, part.id, &s_id, sync_time,
-                                            )
-                                            .await {
-                                                tracing::error!("Database Error: Failed to upsert stream for part {}: {:?}", part.id, e);
-                                            }
-                                        }
-                                    })
-                                    .await;
+                                pending_work.fetch_sub(1, Ordering::Relaxed);
+                                tracing::error!("Failed to send child task to queue");
                             }
                         }
+                    } else {
+                        tracing::warn!(
+                            "Sync Warning: Could not fetch seasons for show '{}'",
+                            item.title
+                        );
                     }
-                } else {
-                    tracing::warn!(
-                        "Sync Warning: Details not found for {} '{}'",
-                        item.item_type,
-                        item.title
-                    );
+
+                    if let Ok(leaves) = leaves_result {
+                        for leaf_item in leaves.items {
+                            let mut episode_item = leaf_item.clone();
+                            if leaf_item.item_type == "episode" && episode_item.parent_id.is_none()
+                            {
+                                episode_item.parent_id = Some(item.rating_key.clone());
+                            }
+
+                            pending_work.fetch_add(1, Ordering::Relaxed);
+                            if task_sender
+                                .send(SyncTask::SyncItem {
+                                    item: episode_item,
+                                    server_uri: server_uri.clone(),
+                                    server_token: server_token.clone(),
+                                    server_id: server_id.clone(),
+                                    library_key: library_key.clone(),
+                                    sync_time,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                pending_work.fetch_sub(1, Ordering::Relaxed);
+                                tracing::error!("Failed to send episode task to queue");
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "Sync Warning: Could not fetch episodes for show '{}'",
+                            item.title
+                        );
+                    }
+                }
+                "season" => {
+                    drop(_permit);
+                }
+                "movie" | "episode" => {
+                    pending_work.fetch_add(1, Ordering::Relaxed);
+                    if task_sender
+                        .send(SyncTask::SyncItemDetails {
+                            item,
+                            server_uri,
+                            server_token,
+                            server_id,
+                            sync_time,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        pending_work.fetch_sub(1, Ordering::Relaxed);
+                        tracing::error!("Failed to send details task to queue");
+                    }
+                }
+                _ => {
+                    drop(_permit);
                 }
             }
-            _ => {
-                drop(_permit);
+        }
+        SyncTask::SyncItemDetails {
+            item,
+            server_uri,
+            server_token,
+            server_id,
+            sync_time,
+        } => {
+            if let Ok(Some(details)) = state
+                .plex_client
+                .get_item_details(&server_uri, &server_token, &item.rating_key)
+                .await
+            {
+                if let Some(media) = details.media.first() {
+                    if let Some(part) = media.parts.first() {
+                        if db::upsert_media_part(
+                            &state.db_pool,
+                            part,
+                            &item.rating_key,
+                            &server_id,
+                            media,
+                            sync_time,
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            stream::iter(&part.streams)
+                                .for_each_concurrent(2, |stream| {
+                                    let db_p = state.db_pool.clone();
+                                    let s_id = server_id.clone();
+                                    async move {
+                                        if let Err(e) = db::upsert_stream(
+                                            &db_p, stream, part.id, &s_id, sync_time,
+                                        )
+                                        .await {
+                                            tracing::error!("Database Error: Failed to upsert stream for part {}: {:?}", part.id, e);
+                                        }
+                                    }
+                                })
+                                .await;
+                        }
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "Sync Warning: Details not found for {} '{}'",
+                    item.item_type,
+                    item.title
+                );
             }
         }
-    })
+        SyncTask::Shutdown => {}
+    }
+
+    pending_work.fetch_sub(1, Ordering::Relaxed);
+}
+
+async fn sync_worker(
+    task_receiver: Arc<Mutex<mpsc::Receiver<SyncTask>>>,
+    task_sender: mpsc::Sender<SyncTask>,
+    state: Arc<AppState>,
+    item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
+    pending_work: Arc<AtomicU64>,
+) {
+    loop {
+        let task = {
+            let mut receiver = task_receiver.lock().await;
+            receiver.recv().await
+        };
+
+        match task {
+            Some(SyncTask::Shutdown) => {
+                break;
+            }
+            Some(task) => {
+                process_sync_task(
+                    task,
+                    &state,
+                    &task_sender,
+                    item_buffer.clone(),
+                    pending_work.clone(),
+                )
+                .await;
+            }
+            None => {
+                if pending_work.load(Ordering::Relaxed) == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 async fn sync_server(
@@ -305,35 +382,69 @@ async fn sync_server(
                             library.title
                         );
 
+                        let (task_sender, task_receiver) = mpsc::channel(1000);
+                        let task_receiver = Arc::new(Mutex::new(task_receiver));
                         let item_buffer = Arc::new(Mutex::new(Vec::<db::ItemWithContext>::new()));
+                        let pending_work = Arc::new(AtomicU64::new(0));
+                        let state_clone = state.clone();
 
-                        stream::iter(item_list.items)
-                            .for_each_concurrent(3, |item| {
-                                let state_c = state.clone();
-                                let client_c = client.clone();
-                                let db_p = db_pool.clone();
-                                let s_id = server.client_identifier.clone();
-                                let l_key = library.key.clone();
-                                let uri = conn.uri.clone();
-                                let tok = token.to_string();
-                                let buf = item_buffer.clone();
-                                async move {
-                                    sync_item_and_children(
-                                        &state_c,
-                                        &client_c,
-                                        &db_p,
-                                        &uri,
-                                        &tok,
-                                        &s_id,
-                                        &l_key,
-                                        &item,
-                                        sync_start_time,
-                                        buf,
-                                    )
-                                    .await;
+                        let mut worker_handles = Vec::new();
+                        for _ in 0..WORKER_COUNT {
+                            let receiver = task_receiver.clone();
+                            let sender = task_sender.clone();
+                            let worker_state = state_clone.clone();
+                            let worker_buffer = item_buffer.clone();
+                            let worker_pending = pending_work.clone();
+                            worker_handles.push(tokio::spawn(async move {
+                                sync_worker(
+                                    receiver,
+                                    sender,
+                                    worker_state.into_inner(),
+                                    worker_buffer,
+                                    worker_pending,
+                                )
+                                .await;
+                            }));
+                        }
+
+                        let initial_count = item_list.items.len() as u64;
+                        pending_work.store(initial_count, Ordering::Relaxed);
+                        for item in item_list.items {
+                            if task_sender
+                                .send(SyncTask::SyncItem {
+                                    item,
+                                    server_uri: conn.uri.clone(),
+                                    server_token: token.to_string(),
+                                    server_id: server.client_identifier.clone(),
+                                    library_key: library.key.clone(),
+                                    sync_time: sync_start_time,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                tracing::error!("Failed to send initial task to queue");
+                                pending_work.fetch_sub(1, Ordering::Relaxed);
+                            }
+                        }
+
+                        loop {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            let pending = pending_work.load(Ordering::Relaxed);
+                            if pending == 0 {
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                if pending_work.load(Ordering::Relaxed) == 0 {
+                                    break;
                                 }
-                            })
-                            .await;
+                            }
+                        }
+
+                        for _ in 0..WORKER_COUNT {
+                            let _ = task_sender.send(SyncTask::Shutdown).await;
+                        }
+
+                        for handle in worker_handles {
+                            let _ = handle.await;
+                        }
 
                         if let Err(e) =
                             flush_item_buffer(item_buffer, &db_pool, sync_start_time).await

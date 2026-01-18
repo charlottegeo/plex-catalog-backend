@@ -176,48 +176,6 @@ pub async fn upsert_library(
     Ok(())
 }
 
-pub async fn upsert_item(
-    pool: &PgPool,
-    item: &Item,
-    library_id: &str,
-    server_id: &str,
-    sync_time: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        r#"
-        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-        ON CONFLICT (id, server_id) DO UPDATE SET
-            last_seen = EXCLUDED.last_seen,
-            title = CASE WHEN items.title IS DISTINCT FROM EXCLUDED.title THEN EXCLUDED.title ELSE items.title END,
-            summary = CASE WHEN items.summary IS DISTINCT FROM EXCLUDED.summary THEN EXCLUDED.summary ELSE items.summary END,
-            year = CASE WHEN items.year IS DISTINCT FROM EXCLUDED.year THEN EXCLUDED.year ELSE items.year END,
-            thumb_path = CASE WHEN items.thumb_path IS DISTINCT FROM EXCLUDED.thumb_path THEN EXCLUDED.thumb_path ELSE items.thumb_path END,
-            art_path = CASE WHEN items.art_path IS DISTINCT FROM EXCLUDED.art_path THEN EXCLUDED.art_path ELSE items.art_path END,
-            guid = CASE WHEN items.guid IS DISTINCT FROM EXCLUDED.guid THEN EXCLUDED.guid ELSE items.guid END,
-            index = CASE WHEN items.index IS DISTINCT FROM EXCLUDED.index THEN EXCLUDED.index ELSE items.index END,
-            leaf_count = CASE WHEN items.leaf_count IS DISTINCT FROM EXCLUDED.leaf_count THEN EXCLUDED.leaf_count ELSE items.leaf_count END
-        "#,
-        item.rating_key,
-        library_id,
-        server_id,
-        item.parent_id,
-        item.title,
-        item.summary,
-        item.item_type,
-        item.year as i16,
-        item.thumb,
-        item.art,
-        sync_time,
-        item.guid,
-        item.index,
-        item.leaf_count
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 pub async fn upsert_items_batch(
     pool: &PgPool,
     items: &[ItemWithContext],
