@@ -597,20 +597,6 @@ pub async fn get_show_seasons(
     .await?
     .count.unwrap_or(0) > 0;
 
-    let mut seasons = sqlx::query_as!(
-        SeasonSummary,
-        r#"
-        SELECT
-            id, title, summary as "summary?", thumb_path, art_path, leaf_count
-        FROM items
-        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'
-        ORDER BY "index" ASC, title ASC
-        "#,
-        show_id,
-        server_id
-    )
-    .fetch_all(pool)
-    .await?;
     if has_direct_episodes {
         let show_as_season = sqlx::query_as!(
             SeasonSummary,
@@ -627,19 +613,23 @@ pub async fn get_show_seasons(
         .await?;
 
         if let Some(show) = show_as_season {
-            let actual_seasons = seasons.iter().any(|s| s.leaf_count.unwrap_or(0) > 0);
-
-            if !actual_seasons {
-                return Ok(vec![show]);
-            } else {
-                if !seasons.iter().any(|s| s.id == show.id) {
-                    seasons.push(show);
-                }
-            }
+            return Ok(vec![show]);
         }
     }
-
-    Ok(seasons)
+    sqlx::query_as!(
+        SeasonSummary,
+        r#"
+        SELECT
+            id, title, summary as "summary?", thumb_path, art_path, leaf_count
+        FROM items
+        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'
+        ORDER BY "index" ASC, title ASC
+        "#,
+        show_id,
+        server_id
+    )
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn get_season_episodes(
