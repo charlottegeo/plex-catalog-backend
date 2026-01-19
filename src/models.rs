@@ -77,7 +77,7 @@ pub struct Item {
     pub leaf_count: Option<i32>,
     pub title: String,
     pub key: String,
-    pub summary: String,
+    pub summary: Option<String>,
     #[serde(rename = "type")]
     pub item_type: String,
     #[serde(default)]
@@ -114,7 +114,7 @@ pub struct ItemWithDetails {
     pub leaf_count: Option<i32>,
     pub title: String,
     pub key: String,
-    pub summary: String,
+    pub summary: Option<String>,
     #[serde(rename = "type")]
     pub item_type: String,
     #[serde(default)]
