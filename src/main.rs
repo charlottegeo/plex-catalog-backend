@@ -77,7 +77,6 @@ async fn flush_item_buffer(
     while attempts < max_attempts {
         match db::upsert_items_batch(db_pool, &items, sync_time).await {
             Ok(_) => {
-                tracing::info!("Successfully batch upserted {} items", count);
                 return Ok(count);
             }
             Err(e) => {
@@ -156,6 +155,7 @@ async fn process_discovery_task(
     detail_sender: &mpsc::Sender<DetailTask>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     pending_work: Arc<AtomicU64>,
+    total_tasks_created: Arc<AtomicU64>,
 ) {
     let _permit = match state.sync_semaphore.acquire().await {
         Ok(p) => p,
@@ -209,6 +209,10 @@ async fn process_discovery_task(
 
                     if let Ok(children) = children_result {
                         if !children.items.is_empty() {
+                            let seasons_count = children.items.len() as u64;
+                            pending_work.fetch_add(seasons_count, Ordering::Relaxed);
+                            total_tasks_created.fetch_add(seasons_count, Ordering::Relaxed);
+
                             let mut seasons_to_batch = Vec::new();
                             for child in children.items {
                                 let mut child_to_sync = child.clone();
@@ -237,10 +241,11 @@ async fn process_discovery_task(
                                     item.title,
                                     e
                                 );
+                                pending_work.fetch_sub(seasons_count, Ordering::Relaxed);
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
                                 return;
                             }
-
+                            pending_work.fetch_sub(seasons_count, Ordering::Relaxed);
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     } else {
@@ -256,6 +261,10 @@ async fn process_discovery_task(
                         .await;
 
                     if let Ok(leaves) = leaves_result {
+                        let episodes_count = leaves.items.len() as u64;
+                        pending_work.fetch_add(episodes_count, Ordering::Relaxed);
+                        total_tasks_created.fetch_add(episodes_count, Ordering::Relaxed);
+
                         let mut episodes_to_batch = Vec::new();
                         let mut episodes_needing_details = Vec::new();
 
@@ -283,6 +292,7 @@ async fn process_discovery_task(
                                 episodes_needing_details.push(episode_item);
                             }
                         }
+
                         if !episodes_to_batch.is_empty() {
                             {
                                 let mut buf = item_buffer.lock().await;
@@ -299,11 +309,15 @@ async fn process_discovery_task(
                                     item.title,
                                     e
                                 );
+                                pending_work.fetch_sub(episodes_count, Ordering::Relaxed);
+                            } else {
+                                pending_work.fetch_sub(episodes_count, Ordering::Relaxed);
                             }
                         }
 
                         for episode_item in episodes_needing_details {
                             pending_work.fetch_add(1, Ordering::Relaxed);
+                            total_tasks_created.fetch_add(1, Ordering::Relaxed);
                             if detail_sender
                                 .send(DetailTask::SyncItemDetails {
                                     item: episode_item,
@@ -316,6 +330,7 @@ async fn process_discovery_task(
                                 .is_err()
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
+                                total_tasks_created.fetch_sub(1, Ordering::Relaxed);
                                 tracing::error!("Failed to send episode detail task to queue");
                             }
                         }
@@ -335,6 +350,7 @@ async fn process_discovery_task(
                             process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
                         if !streams_processed {
                             pending_work.fetch_add(1, Ordering::Relaxed);
+                            total_tasks_created.fetch_add(1, Ordering::Relaxed);
                             if detail_sender
                                 .send(DetailTask::SyncItemDetails {
                                     item,
@@ -347,16 +363,18 @@ async fn process_discovery_task(
                                 .is_err()
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
+                                total_tasks_created.fetch_sub(1, Ordering::Relaxed);
                                 tracing::error!("Failed to send details task to detail queue");
                             }
                         }
                     } else {
                         pending_work.fetch_add(1, Ordering::Relaxed);
+                        total_tasks_created.fetch_add(1, Ordering::Relaxed);
                         if detail_sender
                             .send(DetailTask::SyncItemDetails {
                                 item,
-                                server_uri,
-                                server_token,
+                                server_uri: server_uri.clone(),
+                                server_token: server_token.clone(),
                                 server_id,
                                 sync_time,
                             })
@@ -364,6 +382,7 @@ async fn process_discovery_task(
                             .is_err()
                         {
                             pending_work.fetch_sub(1, Ordering::Relaxed);
+                            total_tasks_created.fetch_sub(1, Ordering::Relaxed);
                             tracing::error!("Failed to send details task to detail queue");
                         }
                     }
@@ -379,7 +398,12 @@ async fn process_discovery_task(
     pending_work.fetch_sub(1, Ordering::Relaxed);
 }
 
-async fn process_detail_task(task: DetailTask, state: &AppState, pending_work: Arc<AtomicU64>) {
+async fn process_detail_task(
+    task: DetailTask,
+    state: &AppState,
+    pending_work: Arc<AtomicU64>,
+    total_tasks_created: Arc<AtomicU64>,
+) {
     let _permit = match state.sync_semaphore.acquire().await {
         Ok(p) => p,
         Err(e) => {
@@ -424,7 +448,11 @@ async fn process_detail_task(task: DetailTask, state: &AppState, pending_work: A
                                             &db_p, stream, part.id, &s_id, sync_time,
                                         )
                                         .await {
-                                            tracing::error!("Database Error: Failed to upsert stream for part {}: {:?}", part.id, e);
+                                            tracing::error!(
+                                                "Database Error: Failed to upsert stream for part {}: {:?}", 
+                                                part.id,
+                                                e
+                                            );
                                         }
                                     }
                                 })
@@ -453,6 +481,7 @@ async fn discovery_worker(
     state: Arc<AppState>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     pending_work: Arc<AtomicU64>,
+    total_tasks_created: Arc<AtomicU64>,
 ) {
     loop {
         let task = {
@@ -472,6 +501,7 @@ async fn discovery_worker(
                     &detail_sender,
                     item_buffer.clone(),
                     pending_work.clone(),
+                    total_tasks_created.clone(),
                 )
                 .await;
             }
@@ -489,6 +519,7 @@ async fn detail_worker(
     detail_receiver: Arc<Mutex<mpsc::Receiver<DetailTask>>>,
     state: Arc<AppState>,
     pending_work: Arc<AtomicU64>,
+    total_tasks_created: Arc<AtomicU64>,
 ) {
     loop {
         let task = {
@@ -501,7 +532,13 @@ async fn detail_worker(
                 break;
             }
             Some(task) => {
-                process_detail_task(task, &state, pending_work.clone()).await;
+                process_detail_task(
+                    task,
+                    &state,
+                    pending_work.clone(),
+                    total_tasks_created.clone(),
+                )
+                .await;
             }
             None => {
                 if pending_work.load(Ordering::Relaxed) == 0 {
@@ -559,6 +596,7 @@ async fn sync_server(
                         let detail_receiver = Arc::new(Mutex::new(detail_receiver));
                         let item_buffer = Arc::new(Mutex::new(Vec::<db::ItemWithContext>::new()));
                         let pending_work = Arc::new(AtomicU64::new(0));
+                        let total_tasks_created = Arc::new(AtomicU64::new(0));
                         let state_clone = state.clone();
 
                         let mut discovery_handles = Vec::new();
@@ -569,6 +607,7 @@ async fn sync_server(
                             let worker_state = state_clone.clone();
                             let worker_buffer = item_buffer.clone();
                             let worker_pending = pending_work.clone();
+                            let worker_total = total_tasks_created.clone();
                             discovery_handles.push(tokio::spawn(async move {
                                 discovery_worker(
                                     receiver,
@@ -577,6 +616,7 @@ async fn sync_server(
                                     worker_state.into_inner(),
                                     worker_buffer,
                                     worker_pending,
+                                    worker_total,
                                 )
                                 .await;
                             }));
@@ -587,15 +627,22 @@ async fn sync_server(
                             let receiver = detail_receiver.clone();
                             let worker_state = state_clone.clone();
                             let worker_pending = pending_work.clone();
+                            let worker_total = total_tasks_created.clone();
                             detail_handles.push(tokio::spawn(async move {
-                                detail_worker(receiver, worker_state.into_inner(), worker_pending)
-                                    .await;
+                                detail_worker(
+                                    receiver,
+                                    worker_state.into_inner(),
+                                    worker_pending,
+                                    worker_total,
+                                )
+                                .await;
                             }));
                         }
 
                         let total_base_items = item_list.items.len() as u64;
                         let initial_count = total_base_items;
                         pending_work.store(initial_count, Ordering::Relaxed);
+                        total_tasks_created.store(total_base_items, Ordering::Relaxed);
 
                         for item in item_list.items {
                             if discovery_sender
@@ -612,6 +659,7 @@ async fn sync_server(
                             {
                                 tracing::error!("Failed to send initial task to discovery queue");
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
+                                total_tasks_created.fetch_sub(1, Ordering::Relaxed);
                             }
                         }
 
@@ -620,53 +668,44 @@ async fn sync_server(
                         let mut last_pending_count = initial_count;
 
                         loop {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
                             let pending = pending_work.load(Ordering::Relaxed);
+                            let total_discovered = total_tasks_created.load(Ordering::Relaxed);
 
                             if last_progress_log.elapsed() >= Duration::from_secs(5) {
-                                let completed = total_base_items.saturating_sub(pending);
-                                let progress_percent = if total_base_items > 0 {
-                                    ((completed * 100) / total_base_items).min(100)
+                                let completed = total_discovered.saturating_sub(pending);
+                                let progress_percent = if total_discovered > 0 {
+                                    (completed * 100) / total_discovered
                                 } else {
                                     100
                                 };
 
-                                let elapsed_secs = progress_start.elapsed().as_secs_f64();
-                                let tasks_completed = last_pending_count.saturating_sub(pending);
-                                let throughput = if elapsed_secs > 0.0 {
-                                    tasks_completed as f64 / elapsed_secs
+                                let elapsed = progress_start.elapsed().as_secs_f64();
+                                let throughput = if elapsed > 0.0 {
+                                    completed as f64 / elapsed
                                 } else {
                                     0.0
                                 };
 
                                 tracing::info!(
-                                    "[{}] | Progress: {}% | Pending Tasks: {} | Throughput: {:.1} tasks/sec",
+                                    "[{}] Progress: {}% | {}/{} items synced | Rate: {:.1} items/sec",
                                     library.title,
                                     progress_percent,
-                                    pending,
+                                    completed,
+                                    total_discovered,
                                     throughput
                                 );
 
                                 last_progress_log = Instant::now();
-                                last_pending_count = pending;
                             }
 
                             if pending == 0 {
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                                 if pending_work.load(Ordering::Relaxed) == 0 {
-                                    let elapsed_secs = progress_start.elapsed().as_secs_f64();
-                                    let total_completed = total_base_items;
-                                    let avg_throughput = if elapsed_secs > 0.0 {
-                                        total_completed as f64 / elapsed_secs
-                                    } else {
-                                        0.0
-                                    };
                                     tracing::info!(
-                                        "[{}] | Complete: 100% | Total Items: {} | Avg Throughput: {:.1} tasks/sec | Duration: {:.1}s",
+                                        "[{}] Sync Complete! Duration: {:?}",
                                         library.title,
-                                        total_completed,
-                                        avg_throughput,
-                                        elapsed_secs
+                                        progress_start.elapsed()
                                     );
                                     break;
                                 }
