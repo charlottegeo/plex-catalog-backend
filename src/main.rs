@@ -21,7 +21,8 @@ mod routes;
 const SYNC_INTERVAL_HOURS: u64 = 12;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const BATCH_SIZE: usize = 75;
-const WORKER_COUNT: usize = 4;
+const DISCOVERY_WORKER_COUNT: usize = 2;
+const DETAIL_WORKER_COUNT: usize = 2;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,7 +33,7 @@ pub struct AppState {
 }
 
 #[derive(Debug, Clone)]
-enum SyncTask {
+enum DiscoveryTask {
     SyncItem {
         item: Item,
         server_uri: String,
@@ -41,6 +42,11 @@ enum SyncTask {
         library_key: String,
         sync_time: chrono::DateTime<chrono::Utc>,
     },
+    Shutdown,
+}
+
+#[derive(Debug, Clone)]
+enum DetailTask {
     SyncItemDetails {
         item: Item,
         server_uri: String,
@@ -136,10 +142,11 @@ async fn process_media_parts(
     }
 }
 
-async fn process_sync_task(
-    task: SyncTask,
+async fn process_discovery_task(
+    task: DiscoveryTask,
     state: &AppState,
-    task_sender: &mpsc::Sender<SyncTask>,
+    discovery_sender: &mpsc::Sender<DiscoveryTask>,
+    detail_sender: &mpsc::Sender<DetailTask>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     pending_work: Arc<AtomicU64>,
 ) {
@@ -153,7 +160,7 @@ async fn process_sync_task(
     };
 
     match task {
-        SyncTask::SyncItem {
+        DiscoveryTask::SyncItem {
             item,
             server_uri,
             server_token,
@@ -203,8 +210,8 @@ async fn process_sync_task(
                             }
 
                             pending_work.fetch_add(1, Ordering::Relaxed);
-                            if task_sender
-                                .send(SyncTask::SyncItem {
+                            if discovery_sender
+                                .send(DiscoveryTask::SyncItem {
                                     item: child_to_sync,
                                     server_uri: server_uri.clone(),
                                     server_token: server_token.clone(),
@@ -216,7 +223,7 @@ async fn process_sync_task(
                                 .is_err()
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("Failed to send child task to queue");
+                                tracing::error!("Failed to send child task to discovery queue");
                             }
                         }
                     } else {
@@ -235,8 +242,8 @@ async fn process_sync_task(
                             }
 
                             pending_work.fetch_add(1, Ordering::Relaxed);
-                            if task_sender
-                                .send(SyncTask::SyncItem {
+                            if discovery_sender
+                                .send(DiscoveryTask::SyncItem {
                                     item: episode_item,
                                     server_uri: server_uri.clone(),
                                     server_token: server_token.clone(),
@@ -248,7 +255,7 @@ async fn process_sync_task(
                                 .is_err()
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("Failed to send episode task to queue");
+                                tracing::error!("Failed to send episode task to discovery queue");
                             }
                         }
                     } else {
@@ -266,8 +273,8 @@ async fn process_sync_task(
                         process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
                     } else {
                         pending_work.fetch_add(1, Ordering::Relaxed);
-                        if task_sender
-                            .send(SyncTask::SyncItemDetails {
+                        if detail_sender
+                            .send(DetailTask::SyncItemDetails {
                                 item,
                                 server_uri,
                                 server_token,
@@ -278,7 +285,7 @@ async fn process_sync_task(
                             .is_err()
                         {
                             pending_work.fetch_sub(1, Ordering::Relaxed);
-                            tracing::error!("Failed to send details task to queue");
+                            tracing::error!("Failed to send details task to detail queue");
                         }
                     }
                 }
@@ -287,7 +294,24 @@ async fn process_sync_task(
                 }
             }
         }
-        SyncTask::SyncItemDetails {
+        DiscoveryTask::Shutdown => {}
+    }
+
+    pending_work.fetch_sub(1, Ordering::Relaxed);
+}
+
+async fn process_detail_task(task: DetailTask, state: &AppState, pending_work: Arc<AtomicU64>) {
+    let _permit = match state.sync_semaphore.acquire().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Critical: Sync semaphore closed unexpectedly: {:?}", e);
+            pending_work.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    match task {
+        DetailTask::SyncItemDetails {
             item,
             server_uri,
             server_token,
@@ -337,38 +361,68 @@ async fn process_sync_task(
                 );
             }
         }
-        SyncTask::Shutdown => {}
+        DetailTask::Shutdown => {}
     }
 
     pending_work.fetch_sub(1, Ordering::Relaxed);
 }
 
-async fn sync_worker(
-    task_receiver: Arc<Mutex<mpsc::Receiver<SyncTask>>>,
-    task_sender: mpsc::Sender<SyncTask>,
+async fn discovery_worker(
+    discovery_receiver: Arc<Mutex<mpsc::Receiver<DiscoveryTask>>>,
+    discovery_sender: mpsc::Sender<DiscoveryTask>,
+    detail_sender: mpsc::Sender<DetailTask>,
     state: Arc<AppState>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     pending_work: Arc<AtomicU64>,
 ) {
     loop {
         let task = {
-            let mut receiver = task_receiver.lock().await;
+            let mut receiver = discovery_receiver.lock().await;
             receiver.recv().await
         };
 
         match task {
-            Some(SyncTask::Shutdown) => {
+            Some(DiscoveryTask::Shutdown) => {
                 break;
             }
             Some(task) => {
-                process_sync_task(
+                process_discovery_task(
                     task,
                     &state,
-                    &task_sender,
+                    &discovery_sender,
+                    &detail_sender,
                     item_buffer.clone(),
                     pending_work.clone(),
                 )
                 .await;
+            }
+            None => {
+                if pending_work.load(Ordering::Relaxed) == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+async fn detail_worker(
+    detail_receiver: Arc<Mutex<mpsc::Receiver<DetailTask>>>,
+    state: Arc<AppState>,
+    pending_work: Arc<AtomicU64>,
+) {
+    loop {
+        let task = {
+            let mut receiver = detail_receiver.lock().await;
+            receiver.recv().await
+        };
+
+        match task {
+            Some(DetailTask::Shutdown) => {
+                break;
+            }
+            Some(task) => {
+                process_detail_task(task, &state, pending_work.clone()).await;
             }
             None => {
                 if pending_work.load(Ordering::Relaxed) == 0 {
@@ -420,23 +474,27 @@ async fn sync_server(
                             library.title
                         );
 
-                        let (task_sender, task_receiver) = mpsc::channel(1000);
-                        let task_receiver = Arc::new(Mutex::new(task_receiver));
+                        let (discovery_sender, discovery_receiver) = mpsc::channel(1000);
+                        let (detail_sender, detail_receiver) = mpsc::channel(1000);
+                        let discovery_receiver = Arc::new(Mutex::new(discovery_receiver));
+                        let detail_receiver = Arc::new(Mutex::new(detail_receiver));
                         let item_buffer = Arc::new(Mutex::new(Vec::<db::ItemWithContext>::new()));
                         let pending_work = Arc::new(AtomicU64::new(0));
                         let state_clone = state.clone();
 
-                        let mut worker_handles = Vec::new();
-                        for _ in 0..WORKER_COUNT {
-                            let receiver = task_receiver.clone();
-                            let sender = task_sender.clone();
+                        let mut discovery_handles = Vec::new();
+                        for _ in 0..DISCOVERY_WORKER_COUNT {
+                            let receiver = discovery_receiver.clone();
+                            let d_sender = discovery_sender.clone();
+                            let d_detail_sender = detail_sender.clone();
                             let worker_state = state_clone.clone();
                             let worker_buffer = item_buffer.clone();
                             let worker_pending = pending_work.clone();
-                            worker_handles.push(tokio::spawn(async move {
-                                sync_worker(
+                            discovery_handles.push(tokio::spawn(async move {
+                                discovery_worker(
                                     receiver,
-                                    sender,
+                                    d_sender,
+                                    d_detail_sender,
                                     worker_state.into_inner(),
                                     worker_buffer,
                                     worker_pending,
@@ -445,11 +503,22 @@ async fn sync_server(
                             }));
                         }
 
+                        let mut detail_handles = Vec::new();
+                        for _ in 0..DETAIL_WORKER_COUNT {
+                            let receiver = detail_receiver.clone();
+                            let worker_state = state_clone.clone();
+                            let worker_pending = pending_work.clone();
+                            detail_handles.push(tokio::spawn(async move {
+                                detail_worker(receiver, worker_state.into_inner(), worker_pending)
+                                    .await;
+                            }));
+                        }
+
                         let initial_count = item_list.items.len() as u64;
                         pending_work.store(initial_count, Ordering::Relaxed);
                         for item in item_list.items {
-                            if task_sender
-                                .send(SyncTask::SyncItem {
+                            if discovery_sender
+                                .send(DiscoveryTask::SyncItem {
                                     item,
                                     server_uri: conn.uri.clone(),
                                     server_token: token.to_string(),
@@ -460,7 +529,7 @@ async fn sync_server(
                                 .await
                                 .is_err()
                             {
-                                tracing::error!("Failed to send initial task to queue");
+                                tracing::error!("Failed to send initial task to discovery queue");
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
                             }
                         }
@@ -476,11 +545,18 @@ async fn sync_server(
                             }
                         }
 
-                        for _ in 0..WORKER_COUNT {
-                            let _ = task_sender.send(SyncTask::Shutdown).await;
+                        for _ in 0..DISCOVERY_WORKER_COUNT {
+                            let _ = discovery_sender.send(DiscoveryTask::Shutdown).await;
                         }
 
-                        for handle in worker_handles {
+                        for _ in 0..DETAIL_WORKER_COUNT {
+                            let _ = detail_sender.send(DetailTask::Shutdown).await;
+                        }
+
+                        for handle in discovery_handles {
+                            let _ = handle.await;
+                        }
+                        for handle in detail_handles {
                             let _ = handle.await;
                         }
 
