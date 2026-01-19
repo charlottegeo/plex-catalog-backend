@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id, title, summary, thumb_path, art_path, leaf_count\n            FROM items\n            WHERE id = $1 AND server_id = $2 AND item_type = 'show' AND leaf_count > 0\n            ",
+  "query": "\n        SELECT\n            id, title, summary as \"summary?\", thumb_path, art_path, leaf_count\n        FROM items\n        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'\n        ORDER BY \"index\" ASC, title ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,7 @@
       },
       {
         "ordinal": 2,
-        "name": "summary",
+        "name": "summary?",
         "type_info": "Text"
       },
       {
@@ -49,5 +49,5 @@
       true
     ]
   },
-  "hash": "51455ee51d8835216d41f48360c83c6d7536e4ea2ed091cc3bda6b96a69f08b8"
+  "hash": "050573ab291a5a717b184978b95d8401150fd05633bf9871add3abfe00d92a33"
 }

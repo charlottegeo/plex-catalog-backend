@@ -505,7 +505,7 @@ pub async fn get_show_seasons(
         SeasonSummary,
         r#"
         SELECT
-            id, title, summary, thumb_path, art_path, leaf_count
+            id, title, summary as "summary?", thumb_path, art_path, leaf_count
         FROM items
         WHERE parent_id = $1 AND server_id = $2 AND item_type = 'season'
         ORDER BY "index" ASC, title ASC
@@ -516,14 +516,23 @@ pub async fn get_show_seasons(
     .fetch_all(pool)
     .await?;
 
-    if seasons.is_empty() {
+    let has_direct_episodes = sqlx::query!(
+        "SELECT COUNT(*) as count FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'episode'",
+        show_id,
+        server_id
+    )
+    .fetch_one(pool)
+    .await?
+    .count.unwrap_or(0) > 0;
+
+    if seasons.is_empty() || has_direct_episodes {
         let show_as_season = sqlx::query_as!(
             SeasonSummary,
             r#"
             SELECT
-                id, title, summary, thumb_path, art_path, leaf_count
+                id, title, summary as "summary?", thumb_path, art_path, leaf_count
             FROM items
-            WHERE id = $1 AND server_id = $2 AND item_type = 'show' AND leaf_count > 0
+            WHERE id = $1 AND server_id = $2 AND item_type = 'show'
             "#,
             show_id,
             server_id
@@ -532,7 +541,9 @@ pub async fn get_show_seasons(
         .await?;
 
         if let Some(show) = show_as_season {
-            seasons.push(show);
+            if !seasons.iter().any(|s| s.id == show.id) {
+                seasons.push(show);
+            }
         }
     }
 
@@ -548,12 +559,26 @@ pub async fn get_season_episodes(
         EpisodeWithVersion,
         r#"
         SELECT
-            e.id, e.title, e.summary, e.thumb_path, e.index,
-            mp.video_resolution, s.language as "subtitle_language"
+            e.id, 
+            e.title, 
+            e.summary as "summary?", 
+            e.thumb_path, 
+            e.index,
+            mp.video_resolution, 
+            s.language as "subtitle_language"
         FROM items e
         LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id
         LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3
-        WHERE (e.parent_id = $1 OR e.id = $1) AND e.server_id = $2 AND e.item_type = 'episode'
+        WHERE e.server_id = $2 
+          AND e.item_type = 'episode'
+          AND (
+            e.parent_id = $1
+            OR (
+                e.parent_id = (SELECT parent_id FROM items WHERE id = $1 AND item_type = 'season')
+                AND EXISTS (SELECT 1 FROM items WHERE id = $1 AND item_type = 'season')
+            )
+            OR e.id = $1
+          )
         ORDER BY e.index ASC
         "#,
         season_id,
