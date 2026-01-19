@@ -204,9 +204,18 @@ pub async fn upsert_items_batch(
         .collect();
     let item_types: Vec<String> = items.iter().map(|i| i.item.item_type.clone()).collect();
     let years: Vec<i16> = items.iter().map(|i| i.item.year as i16).collect();
-    let thumb_paths: Vec<Option<String>> = items.iter().map(|i| i.item.thumb.clone()).collect();
-    let art_paths: Vec<Option<String>> = items.iter().map(|i| i.item.art.clone()).collect();
-    let guids: Vec<Option<String>> = items.iter().map(|i| i.item.guid.clone()).collect();
+    let thumb_paths: Vec<Option<String>> = items
+        .iter()
+        .map(|i| i.item.thumb.as_ref().map(|s| s.clone()))
+        .collect();
+    let art_paths: Vec<Option<String>> = items
+        .iter()
+        .map(|i| i.item.art.as_ref().map(|s| s.clone()))
+        .collect();
+    let guids: Vec<Option<String>> = items
+        .iter()
+        .map(|i| i.item.guid.as_ref().map(|s| s.clone()))
+        .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
     let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
     let sync_times: Vec<DateTime<Utc>> = vec![sync_time; items.len()];

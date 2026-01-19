@@ -182,56 +182,66 @@ async fn process_discovery_task(
                     library_id: library_key.clone(),
                     server_id: server_id.clone(),
                 });
+                drop(buf);
+            }
 
-                if buf.len() >= BATCH_SIZE {
-                    drop(buf);
-                    if let Err(e) =
-                        flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time).await
-                    {
-                        tracing::error!("Database Error: Failed to flush item buffer: {:?}", e);
-                    }
-                }
+            if let Err(e) = flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time).await
+            {
+                tracing::error!(
+                    "Database Error: Failed to flush parent item '{}' ({}). Aborting children processing to prevent FK violations: {:?}",
+                    item.title,
+                    item.item_type,
+                    e
+                );
+                pending_work.fetch_sub(1, Ordering::Relaxed);
+                return;
             }
 
             match item.item_type.as_str() {
                 "show" => {
                     drop(_permit);
-                    let (children_result, leaves_result) = tokio::join!(
-                        state.plex_client.get_item_children(
-                            &server_uri,
-                            &server_token,
-                            &item.rating_key
-                        ),
-                        state.plex_client.get_item_all_leaves(
-                            &server_uri,
-                            &server_token,
-                            &item.rating_key
-                        )
-                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+
+                    let children_result = state
+                        .plex_client
+                        .get_item_children(&server_uri, &server_token, &item.rating_key)
+                        .await;
 
                     if let Ok(children) = children_result {
-                        for child in children.items {
-                            let mut child_to_sync = child.clone();
-                            if child.item_type == "episode" {
-                                child_to_sync.parent_id = Some(item.rating_key.clone());
+                        if !children.items.is_empty() {
+                            let mut seasons_to_batch = Vec::new();
+                            for child in children.items {
+                                let mut child_to_sync = child.clone();
+                                if child_to_sync.parent_id.is_none() {
+                                    child_to_sync.parent_id = Some(item.rating_key.clone());
+                                }
+                                seasons_to_batch.push(db::ItemWithContext {
+                                    item: child_to_sync,
+                                    library_id: library_key.clone(),
+                                    server_id: server_id.clone(),
+                                });
                             }
 
-                            pending_work.fetch_add(1, Ordering::Relaxed);
-                            if discovery_sender
-                                .send(DiscoveryTask::SyncItem {
-                                    item: child_to_sync,
-                                    server_uri: server_uri.clone(),
-                                    server_token: server_token.clone(),
-                                    server_id: server_id.clone(),
-                                    library_key: library_key.clone(),
-                                    sync_time,
-                                })
-                                .await
-                                .is_err()
                             {
-                                pending_work.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("Failed to send child task to discovery queue");
+                                let mut buf = item_buffer.lock().await;
+                                buf.extend(seasons_to_batch);
+                                drop(buf);
                             }
+
+                            if let Err(e) =
+                                flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time)
+                                    .await
+                            {
+                                tracing::error!(
+                                    "Database Error: Failed to flush seasons for show '{}'. Aborting episode processing: {:?}",
+                                    item.title,
+                                    e
+                                );
+                                pending_work.fetch_sub(1, Ordering::Relaxed);
+                                return;
+                            }
+
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     } else {
                         tracing::warn!(
@@ -239,6 +249,11 @@ async fn process_discovery_task(
                             item.title
                         );
                     }
+
+                    let leaves_result = state
+                        .plex_client
+                        .get_item_all_leaves(&server_uri, &server_token, &item.rating_key)
+                        .await;
 
                     if let Ok(leaves) = leaves_result {
                         let mut episodes_to_batch = Vec::new();
@@ -268,26 +283,22 @@ async fn process_discovery_task(
                                 episodes_needing_details.push(episode_item);
                             }
                         }
-
                         if !episodes_to_batch.is_empty() {
                             {
                                 let mut buf = item_buffer.lock().await;
                                 buf.extend(episodes_to_batch);
-                                if buf.len() >= BATCH_SIZE {
-                                    drop(buf);
-                                    if let Err(e) = flush_item_buffer(
-                                        item_buffer.clone(),
-                                        &state.db_pool,
-                                        sync_time,
-                                    )
+                                drop(buf);
+                            }
+
+                            if let Err(e) =
+                                flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time)
                                     .await
-                                    {
-                                        tracing::error!(
-                                            "Database Error: Failed to flush episode batch: {:?}",
-                                            e
-                                        );
-                                    }
-                                }
+                            {
+                                tracing::error!(
+                                    "Database Error: Failed to flush episode batch for show '{}': {:?}",
+                                    item.title,
+                                    e
+                                );
                             }
                         }
 
@@ -582,8 +593,10 @@ async fn sync_server(
                             }));
                         }
 
-                        let initial_count = item_list.items.len() as u64;
+                        let total_base_items = item_list.items.len() as u64;
+                        let initial_count = total_base_items;
                         pending_work.store(initial_count, Ordering::Relaxed);
+
                         for item in item_list.items {
                             if discovery_sender
                                 .send(DiscoveryTask::SyncItem {
@@ -602,12 +615,59 @@ async fn sync_server(
                             }
                         }
 
+                        let progress_start = Instant::now();
+                        let mut last_progress_log = Instant::now();
+                        let mut last_pending_count = initial_count;
+
                         loop {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             let pending = pending_work.load(Ordering::Relaxed);
+
+                            if last_progress_log.elapsed() >= Duration::from_secs(5) {
+                                let completed = total_base_items.saturating_sub(pending);
+                                let progress_percent = if total_base_items > 0 {
+                                    ((completed * 100) / total_base_items).min(100)
+                                } else {
+                                    100
+                                };
+
+                                let elapsed_secs = progress_start.elapsed().as_secs_f64();
+                                let tasks_completed = last_pending_count.saturating_sub(pending);
+                                let throughput = if elapsed_secs > 0.0 {
+                                    tasks_completed as f64 / elapsed_secs
+                                } else {
+                                    0.0
+                                };
+
+                                tracing::info!(
+                                    "[{}] | Progress: {}% | Pending Tasks: {} | Throughput: {:.1} tasks/sec",
+                                    library.title,
+                                    progress_percent,
+                                    pending,
+                                    throughput
+                                );
+
+                                last_progress_log = Instant::now();
+                                last_pending_count = pending;
+                            }
+
                             if pending == 0 {
                                 tokio::time::sleep(Duration::from_millis(200)).await;
                                 if pending_work.load(Ordering::Relaxed) == 0 {
+                                    let elapsed_secs = progress_start.elapsed().as_secs_f64();
+                                    let total_completed = total_base_items;
+                                    let avg_throughput = if elapsed_secs > 0.0 {
+                                        total_completed as f64 / elapsed_secs
+                                    } else {
+                                        0.0
+                                    };
+                                    tracing::info!(
+                                        "[{}] | Complete: 100% | Total Items: {} | Avg Throughput: {:.1} tasks/sec | Duration: {:.1}s",
+                                        library.title,
+                                        total_completed,
+                                        avg_throughput,
+                                        elapsed_secs
+                                    );
                                     break;
                                 }
                             }
