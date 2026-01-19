@@ -191,8 +191,17 @@ pub async fn upsert_items_batch(
     let server_ids: Vec<String> = items.iter().map(|i| i.server_id.clone()).collect();
     let parent_ids: Vec<Option<String>> = items.iter().map(|i| i.item.parent_id.clone()).collect();
     let titles: Vec<String> = items.iter().map(|i| i.item.title.clone()).collect();
-    let summaries: Vec<Option<String>> =
-        items.iter().map(|i| Some(i.item.summary.clone())).collect();
+    let summaries: Vec<Option<String>> = items
+        .iter()
+        .map(|i| {
+            let summary = i.item.summary.clone();
+            if summary.is_empty() {
+                None
+            } else {
+                Some(summary)
+            }
+        })
+        .collect();
     let item_types: Vec<String> = items.iter().map(|i| i.item.item_type.clone()).collect();
     let years: Vec<i16> = items.iter().map(|i| i.item.year as i16).collect();
     let thumb_paths: Vec<Option<String>> = items.iter().map(|i| i.item.thumb.clone()).collect();

@@ -113,33 +113,40 @@ async fn process_media_parts(
     server_id: &str,
     sync_time: chrono::DateTime<chrono::Utc>,
     db_pool: &sqlx::PgPool,
-) {
+) -> bool {
     if let Some(media) = item.media.first() {
         if let Some(part) = media.parts.first() {
             if db::upsert_media_part(db_pool, part, &item.rating_key, server_id, media, sync_time)
                 .await
                 .is_ok()
             {
-                stream::iter(&part.streams)
-                    .for_each_concurrent(2, |stream| {
-                        let db_p = db_pool.clone();
-                        let s_id = server_id.to_string();
-                        async move {
-                            if let Err(e) =
-                                db::upsert_stream(&db_p, stream, part.id, &s_id, sync_time).await
-                            {
-                                tracing::error!(
-                                    "Database Error: Failed to upsert stream for part {}: {:?}",
-                                    part.id,
-                                    e
-                                );
+                if !part.streams.is_empty() {
+                    stream::iter(&part.streams)
+                        .for_each_concurrent(2, |stream| {
+                            let db_p = db_pool.clone();
+                            let s_id = server_id.to_string();
+                            async move {
+                                if let Err(e) =
+                                    db::upsert_stream(&db_p, stream, part.id, &s_id, sync_time)
+                                        .await
+                                {
+                                    tracing::error!(
+                                        "Database Error: Failed to upsert stream for part {}: {:?}",
+                                        part.id,
+                                        e
+                                    );
+                                }
                             }
-                        }
-                    })
-                    .await;
+                        })
+                        .await;
+                    return true;
+                } else {
+                    return false;
+                }
             }
         }
     }
+    false
 }
 
 async fn process_discovery_task(
@@ -234,6 +241,9 @@ async fn process_discovery_task(
                     }
 
                     if let Ok(leaves) = leaves_result {
+                        let mut episodes_to_batch = Vec::new();
+                        let mut episodes_needing_details = Vec::new();
+
                         for leaf_item in leaves.items {
                             let mut episode_item = leaf_item.clone();
                             if leaf_item.item_type == "episode" && episode_item.parent_id.is_none()
@@ -241,21 +251,61 @@ async fn process_discovery_task(
                                 episode_item.parent_id = Some(item.rating_key.clone());
                             }
 
+                            let needs_detail_fetch = episode_item.media.is_empty()
+                                || episode_item
+                                    .media
+                                    .iter()
+                                    .flat_map(|m| &m.parts)
+                                    .all(|p| p.streams.is_empty());
+
+                            episodes_to_batch.push(db::ItemWithContext {
+                                item: episode_item.clone(),
+                                library_id: library_key.clone(),
+                                server_id: server_id.clone(),
+                            });
+
+                            if needs_detail_fetch {
+                                episodes_needing_details.push(episode_item);
+                            }
+                        }
+
+                        if !episodes_to_batch.is_empty() {
+                            {
+                                let mut buf = item_buffer.lock().await;
+                                buf.extend(episodes_to_batch);
+                                if buf.len() >= BATCH_SIZE {
+                                    drop(buf);
+                                    if let Err(e) = flush_item_buffer(
+                                        item_buffer.clone(),
+                                        &state.db_pool,
+                                        sync_time,
+                                    )
+                                    .await
+                                    {
+                                        tracing::error!(
+                                            "Database Error: Failed to flush episode batch: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        for episode_item in episodes_needing_details {
                             pending_work.fetch_add(1, Ordering::Relaxed);
-                            if discovery_sender
-                                .send(DiscoveryTask::SyncItem {
+                            if detail_sender
+                                .send(DetailTask::SyncItemDetails {
                                     item: episode_item,
                                     server_uri: server_uri.clone(),
                                     server_token: server_token.clone(),
                                     server_id: server_id.clone(),
-                                    library_key: library_key.clone(),
                                     sync_time,
                                 })
                                 .await
                                 .is_err()
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("Failed to send episode task to discovery queue");
+                                tracing::error!("Failed to send episode detail task to queue");
                             }
                         }
                     } else {
@@ -270,7 +320,25 @@ async fn process_discovery_task(
                 }
                 "movie" | "episode" => {
                     if !item.media.is_empty() {
-                        process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
+                        let streams_processed =
+                            process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
+                        if !streams_processed {
+                            pending_work.fetch_add(1, Ordering::Relaxed);
+                            if detail_sender
+                                .send(DetailTask::SyncItemDetails {
+                                    item,
+                                    server_uri,
+                                    server_token,
+                                    server_id,
+                                    sync_time,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                pending_work.fetch_sub(1, Ordering::Relaxed);
+                                tracing::error!("Failed to send details task to detail queue");
+                            }
+                        }
                     } else {
                         pending_work.fetch_add(1, Ordering::Relaxed);
                         if detail_sender
