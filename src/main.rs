@@ -41,6 +41,7 @@ enum DiscoveryTask {
         server_id: String,
         library_key: String,
         sync_time: chrono::DateTime<chrono::Utc>,
+        force_scan: bool,
     },
     Shutdown,
 }
@@ -151,7 +152,7 @@ async fn process_media_parts(
 async fn process_discovery_task(
     task: DiscoveryTask,
     state: &AppState,
-    discovery_sender: &mpsc::Sender<DiscoveryTask>,
+    _discovery_sender: &mpsc::Sender<DiscoveryTask>,
     detail_sender: &mpsc::Sender<DetailTask>,
     item_buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     pending_work: Arc<AtomicU64>,
@@ -174,7 +175,36 @@ async fn process_discovery_task(
             server_id,
             library_key,
             sync_time,
+            force_scan,
         } => {
+            if !force_scan {
+                {
+                    let mut buf = item_buffer.lock().await;
+                    buf.push(db::ItemWithContext {
+                        item: item.clone(),
+                        library_id: library_key.clone(),
+                        server_id: server_id.clone(),
+                    });
+                }
+
+                if let Err(e) = db::touch_items_batch(
+                    &state.db_pool,
+                    &[item.rating_key.clone()],
+                    &server_id,
+                    sync_time,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "Database Error: Failed to touch tree for item '{}': {:?}",
+                        item.title,
+                        e
+                    );
+                }
+
+                pending_work.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
             {
                 let mut buf = item_buffer.lock().await;
                 buf.push(db::ItemWithContext {
@@ -354,9 +384,9 @@ async fn process_discovery_task(
                             if detail_sender
                                 .send(DetailTask::SyncItemDetails {
                                     item,
-                                    server_uri,
-                                    server_token,
-                                    server_id,
+                                    server_uri: server_uri.clone(),
+                                    server_token: server_token.clone(),
+                                    server_id: server_id.clone(),
                                     sync_time,
                                 })
                                 .await
@@ -402,7 +432,7 @@ async fn process_detail_task(
     task: DetailTask,
     state: &AppState,
     pending_work: Arc<AtomicU64>,
-    total_tasks_created: Arc<AtomicU64>,
+    _total_tasks_created: Arc<AtomicU64>,
 ) {
     let _permit = match state.sync_semaphore.acquire().await {
         Ok(p) => p,
@@ -572,6 +602,7 @@ async fn sync_server(
                         library.title,
                         server.name
                     );
+
                     let _ = db::upsert_library(
                         &db_pool,
                         library,
@@ -579,6 +610,14 @@ async fn sync_server(
                         sync_start_time,
                     )
                     .await;
+
+                    let existing_timestamps = db::get_library_item_timestamps(
+                        &db_pool,
+                        &server.client_identifier,
+                        &library.key,
+                    )
+                    .await
+                    .unwrap_or_default();
 
                     if let Ok(item_list) = client
                         .get_library_items(&conn.uri, token, &library.key)
@@ -640,32 +679,67 @@ async fn sync_server(
                         }
 
                         let total_base_items = item_list.items.len() as u64;
-                        let initial_count = total_base_items;
-                        pending_work.store(initial_count, Ordering::Relaxed);
+                        pending_work.store(total_base_items, Ordering::Relaxed);
                         total_tasks_created.store(total_base_items, Ordering::Relaxed);
 
+                        let mut items_to_touch = Vec::new();
+
                         for item in item_list.items {
-                            if discovery_sender
-                                .send(DiscoveryTask::SyncItem {
-                                    item,
-                                    server_uri: conn.uri.clone(),
-                                    server_token: token.to_string(),
-                                    server_id: server.client_identifier.clone(),
-                                    library_key: library.key.clone(),
-                                    sync_time: sync_start_time,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                tracing::error!("Failed to send initial task to discovery queue");
+                            let force_scan = match item.updated_at {
+                                Some(ts) => existing_timestamps
+                                    .get(&item.rating_key)
+                                    .map_or(true, |&old_ts| ts > old_ts),
+                                None => true,
+                            };
+
+                            if force_scan {
+                                if discovery_sender
+                                    .send(DiscoveryTask::SyncItem {
+                                        item,
+                                        server_uri: conn.uri.clone(),
+                                        server_token: token.to_string(),
+                                        server_id: server.client_identifier.clone(),
+                                        library_key: library.key.clone(),
+                                        sync_time: sync_start_time,
+                                        force_scan: true,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    tracing::error!(
+                                        "Failed to send initial task to discovery queue"
+                                    );
+                                    pending_work.fetch_sub(1, Ordering::Relaxed);
+                                    total_tasks_created.fetch_sub(1, Ordering::Relaxed);
+                                }
+                            } else {
+                                items_to_touch.push(item.rating_key);
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
-                                total_tasks_created.fetch_sub(1, Ordering::Relaxed);
+                            }
+                        }
+
+                        if !items_to_touch.is_empty() {
+                            let skipped_count = items_to_touch.len();
+                            if let Err(e) = db::touch_items_batch(
+                                &db_pool,
+                                &items_to_touch,
+                                &server.client_identifier,
+                                sync_start_time,
+                            )
+                            .await
+                            {
+                                tracing::error!("Database Error: Batch touch failed: {:?}", e);
+                            } else {
+                                tracing::info!(
+                                    "[{}] Skipped and updated {} unchanged items.",
+                                    library.title,
+                                    skipped_count
+                                );
                             }
                         }
 
                         let progress_start = Instant::now();
                         let mut last_progress_log = Instant::now();
-                        let mut last_pending_count = initial_count;
 
                         loop {
                             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -746,16 +820,18 @@ async fn sync_server(
             }
             tracing::info!("Finished sync for server: '{}'", server.name);
         } else {
-            tracing::error!(
-                "Connection Error: Failed to reach libraries for server '{}'",
+            tracing::warn!(
+                "Connection Warning: Server '{}' is unreachable. Marking as offline.",
                 server.name
             );
+            let _ = db::upsert_server(&db_pool, &server, false, sync_start_time).await;
         }
     } else {
         tracing::warn!(
-            "Skip: Server '{}' has no valid remote connection or token",
+            "Skip: Server '{}' has no valid remote connection. Marking as offline.",
             server.name
         );
+        let _ = db::upsert_server(&db_pool, &server, false, sync_start_time).await;
     }
 }
 

@@ -86,6 +86,8 @@ pub struct Item {
     pub media: Vec<Media>,
     pub thumb: Option<String>,
     pub art: Option<String>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -123,6 +125,8 @@ pub struct ItemWithDetails {
     pub media: Vec<Media>,
     pub thumb: Option<String>,
     pub art: Option<String>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -82,7 +82,7 @@ pub async fn get_library_items(
 ) -> Result<Vec<Item>, sqlx::Error> {
     sqlx::query(
         r#"
-        SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count
+        SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count, updated_at
         FROM items
         WHERE server_id = $1 AND library_id = $2 AND item_type IN ('movie', 'show')
         ORDER BY title ASC
@@ -110,6 +110,7 @@ pub async fn get_library_items(
             art: row.try_get("art_path")?,
             index: row.try_get("index")?,
             leaf_count: row.try_get("leaf_count")?,
+            updated_at: row.try_get("updated_at")?,
         })
     })
     .collect()
@@ -217,37 +218,27 @@ pub async fn upsert_items_batch(
         .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
     let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
+    let updated_ats: Vec<Option<i64>> = items.iter().map(|i| i.item.updated_at).collect();
     let sync_times: Vec<DateTime<Utc>> = vec![sync_time; items.len()];
 
     let result = sqlx::query(
         r#"
-        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
+        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count, updated_at)
         SELECT * FROM UNNEST(
-            $1::text[],
-            $2::text[],
-            $3::text[],
-            $4::text[],
-            $5::text[],
-            $6::text[],
-            $7::text[],
-            $8::smallint[],
-            $9::text[],
-            $10::text[],
-            $11::timestamptz[],
-            $12::text[],
-            $13::integer[],
-            $14::integer[]
-        ) AS t(id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count)
+            $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::smallint[],
+            $9::text[], $10::text[], $11::timestamptz[], $12::text[], $13::integer[], $14::integer[], $15::bigint[]
+        )
         ON CONFLICT (id, server_id) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
-            title = CASE WHEN items.title IS DISTINCT FROM EXCLUDED.title THEN EXCLUDED.title ELSE items.title END,
-            summary = CASE WHEN items.summary IS DISTINCT FROM EXCLUDED.summary THEN EXCLUDED.summary ELSE items.summary END,
-            year = CASE WHEN items.year IS DISTINCT FROM EXCLUDED.year THEN EXCLUDED.year ELSE items.year END,
-            thumb_path = CASE WHEN items.thumb_path IS DISTINCT FROM EXCLUDED.thumb_path THEN EXCLUDED.thumb_path ELSE items.thumb_path END,
-            art_path = CASE WHEN items.art_path IS DISTINCT FROM EXCLUDED.art_path THEN EXCLUDED.art_path ELSE items.art_path END,
-            guid = CASE WHEN items.guid IS DISTINCT FROM EXCLUDED.guid THEN EXCLUDED.guid ELSE items.guid END,
-            index = CASE WHEN items.index IS DISTINCT FROM EXCLUDED.index THEN EXCLUDED.index ELSE items.index END,
-            leaf_count = CASE WHEN items.leaf_count IS DISTINCT FROM EXCLUDED.leaf_count THEN EXCLUDED.leaf_count ELSE items.leaf_count END
+            title = EXCLUDED.title,
+            summary = EXCLUDED.summary,
+            year = EXCLUDED.year,
+            thumb_path = EXCLUDED.thumb_path,
+            art_path = EXCLUDED.art_path,
+            guid = EXCLUDED.guid,
+            index = EXCLUDED.index,
+            leaf_count = EXCLUDED.leaf_count,
+            updated_at = EXCLUDED.updated_at
         "#,
     )
     .bind(&ids[..])
@@ -264,12 +255,108 @@ pub async fn upsert_items_batch(
     .bind(&guids[..])
     .bind(&indices[..])
     .bind(&leaf_counts[..])
+    .bind(&updated_ats[..])
     .execute(pool)
     .await?;
 
     Ok(result.rows_affected() as usize)
 }
 
+pub async fn get_library_item_timestamps(
+    pool: &PgPool,
+    server_id: &str,
+    library_id: &str,
+) -> Result<std::collections::HashMap<String, i64>, sqlx::Error> {
+    struct TsRow {
+        id: String,
+        updated_at: Option<i64>,
+    }
+
+    let rows = sqlx::query_as!(
+        TsRow,
+        "SELECT id, updated_at FROM items WHERE server_id = $1 AND library_id = $2 AND updated_at IS NOT NULL",
+        server_id,
+        library_id
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.id, r.updated_at.unwrap_or(0)))
+        .collect())
+}
+
+pub async fn touch_items_batch(
+    pool: &PgPool,
+    item_ids: &[String],
+    server_id: &str,
+    sync_time: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    if item_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE items SET last_seen = $3 
+        WHERE server_id = $2 
+        AND (
+            id = ANY($1) 
+            OR parent_id = ANY($1) 
+            OR parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        )
+        "#,
+    )
+    .bind(item_ids)
+    .bind(server_id)
+    .bind(sync_time)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE media_parts SET last_seen = $3
+        FROM items i
+        WHERE media_parts.item_id = i.id 
+        AND media_parts.server_id = i.server_id
+        AND i.server_id = $2
+        AND (
+            i.id = ANY($1) 
+            OR i.parent_id = ANY($1) 
+            OR i.parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        )
+        "#,
+    )
+    .bind(item_ids)
+    .bind(server_id)
+    .bind(sync_time)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE streams SET last_seen = $3
+        FROM media_parts mp
+        JOIN items i ON mp.item_id = i.id AND mp.server_id = i.server_id
+        WHERE streams.media_part_id = mp.id 
+        AND streams.server_id = mp.server_id
+        AND i.server_id = $2
+        AND (
+            i.id = ANY($1) 
+            OR i.parent_id = ANY($1) 
+            OR i.parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        )
+        "#,
+    )
+    .bind(item_ids)
+    .bind(server_id)
+    .bind(sync_time)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
 pub async fn upsert_media_part(
     pool: &PgPool,
     part: &Part,
@@ -501,6 +588,15 @@ pub async fn get_show_seasons(
     show_id: &str,
     server_id: &str,
 ) -> Result<Vec<SeasonSummary>, sqlx::Error> {
+    let has_direct_episodes = sqlx::query!(
+        "SELECT COUNT(*) as count FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'episode'",
+        show_id,
+        server_id
+    )
+    .fetch_one(pool)
+    .await?
+    .count.unwrap_or(0) > 0;
+
     let mut seasons = sqlx::query_as!(
         SeasonSummary,
         r#"
@@ -515,17 +611,7 @@ pub async fn get_show_seasons(
     )
     .fetch_all(pool)
     .await?;
-
-    let has_direct_episodes = sqlx::query!(
-        "SELECT COUNT(*) as count FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'episode'",
-        show_id,
-        server_id
-    )
-    .fetch_one(pool)
-    .await?
-    .count.unwrap_or(0) > 0;
-
-    if seasons.is_empty() || has_direct_episodes {
+    if has_direct_episodes {
         let show_as_season = sqlx::query_as!(
             SeasonSummary,
             r#"
@@ -541,8 +627,14 @@ pub async fn get_show_seasons(
         .await?;
 
         if let Some(show) = show_as_season {
-            if !seasons.iter().any(|s| s.id == show.id) {
-                seasons.push(show);
+            let actual_seasons = seasons.iter().any(|s| s.leaf_count.unwrap_or(0) > 0);
+
+            if !actual_seasons {
+                return Ok(vec![show]);
+            } else {
+                if !seasons.iter().any(|s| s.id == show.id) {
+                    seasons.push(show);
+                }
             }
         }
     }
