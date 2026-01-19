@@ -194,12 +194,11 @@ pub async fn upsert_items_batch(
     let summaries: Vec<Option<String>> = items
         .iter()
         .map(|i| {
-            let summary = i.item.summary.clone();
-            if summary.is_empty() {
-                None
-            } else {
-                Some(summary)
-            }
+            i.item
+                .summary
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.clone())
         })
         .collect();
     let item_types: Vec<String> = items.iter().map(|i| i.item.item_type.clone()).collect();
