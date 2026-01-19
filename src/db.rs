@@ -105,6 +105,7 @@ pub async fn get_library_items(
             summary: row.try_get("summary")?,
             item_type: row.try_get("item_type")?,
             year: row.try_get::<i16, _>("year").unwrap_or(0) as u16,
+            media: Vec::new(),
             thumb: row.try_get("thumb_path")?,
             art: row.try_get("art_path")?,
             index: row.try_get("index")?,

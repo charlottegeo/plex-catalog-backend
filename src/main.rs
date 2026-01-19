@@ -102,6 +102,40 @@ async fn flush_item_buffer(
     Ok(count)
 }
 
+async fn process_media_parts(
+    item: &Item,
+    server_id: &str,
+    sync_time: chrono::DateTime<chrono::Utc>,
+    db_pool: &sqlx::PgPool,
+) {
+    if let Some(media) = item.media.first() {
+        if let Some(part) = media.parts.first() {
+            if db::upsert_media_part(db_pool, part, &item.rating_key, server_id, media, sync_time)
+                .await
+                .is_ok()
+            {
+                stream::iter(&part.streams)
+                    .for_each_concurrent(2, |stream| {
+                        let db_p = db_pool.clone();
+                        let s_id = server_id.to_string();
+                        async move {
+                            if let Err(e) =
+                                db::upsert_stream(&db_p, stream, part.id, &s_id, sync_time).await
+                            {
+                                tracing::error!(
+                                    "Database Error: Failed to upsert stream for part {}: {:?}",
+                                    part.id,
+                                    e
+                                );
+                            }
+                        }
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
 async fn process_sync_task(
     task: SyncTask,
     state: &AppState,
@@ -228,20 +262,24 @@ async fn process_sync_task(
                     drop(_permit);
                 }
                 "movie" | "episode" => {
-                    pending_work.fetch_add(1, Ordering::Relaxed);
-                    if task_sender
-                        .send(SyncTask::SyncItemDetails {
-                            item,
-                            server_uri,
-                            server_token,
-                            server_id,
-                            sync_time,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        pending_work.fetch_sub(1, Ordering::Relaxed);
-                        tracing::error!("Failed to send details task to queue");
+                    if !item.media.is_empty() {
+                        process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
+                    } else {
+                        pending_work.fetch_add(1, Ordering::Relaxed);
+                        if task_sender
+                            .send(SyncTask::SyncItemDetails {
+                                item,
+                                server_uri,
+                                server_token,
+                                server_id,
+                                sync_time,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            pending_work.fetch_sub(1, Ordering::Relaxed);
+                            tracing::error!("Failed to send details task to queue");
+                        }
                     }
                 }
                 _ => {

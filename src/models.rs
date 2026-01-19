@@ -82,6 +82,8 @@ pub struct Item {
     pub item_type: String,
     #[serde(default)]
     pub year: u16,
+    #[serde(rename = "Media", default)]
+    pub media: Vec<Media>,
     pub thumb: Option<String>,
     pub art: Option<String>,
 }
