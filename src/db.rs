@@ -199,6 +199,7 @@ pub async fn upsert_items_batch(
     let guids: Vec<Option<String>> = items.iter().map(|i| i.item.guid.clone()).collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
     let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
+    let sync_times: Vec<DateTime<Utc>> = vec![sync_time; items.len()];
 
     let result = sqlx::query(
         r#"
@@ -214,7 +215,7 @@ pub async fn upsert_items_batch(
             $8::smallint[],
             $9::text[],
             $10::text[],
-            $11::timestamptz,
+            $11::timestamptz[],
             $12::text[],
             $13::integer[],
             $14::integer[]
@@ -241,7 +242,7 @@ pub async fn upsert_items_batch(
     .bind(&years[..])
     .bind(&thumb_paths[..])
     .bind(&art_paths[..])
-    .bind(sync_time)
+    .bind(&sync_times[..])
     .bind(&guids[..])
     .bind(&indices[..])
     .bind(&leaf_counts[..])
