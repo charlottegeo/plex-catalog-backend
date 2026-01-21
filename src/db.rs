@@ -1,6 +1,6 @@
 use crate::models::{
     DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaVersion, Part,
-    SearchResult, SeasonSummary, ServerAvailability, Stream,
+    SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -17,6 +17,8 @@ struct ItemByGuid {
     art_path: Option<String>,
     thumb_path: Option<String>,
     item_type: String,
+    content_rating: Option<String>,
+    duration: Option<i64>,
 }
 
 #[derive(FromRow)]
@@ -33,6 +35,8 @@ struct EpisodeWithVersion {
     summary: Option<String>,
     thumb_path: Option<String>,
     index: Option<i32>,
+    content_rating: Option<String>,
+    duration: Option<i64>,
     video_resolution: Option<String>,
     subtitle_language: Option<String>,
 }
@@ -51,6 +55,49 @@ pub async fn get_all_servers(pool: &PgPool) -> Result<Vec<DbServer>, sqlx::Error
     )
     .fetch_all(pool)
     .await
+}
+
+pub async fn get_system_info(
+    pool: &PgPool,
+    sync_interval_hours: u64,
+) -> Result<SystemInfo, sqlx::Error> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        r#"
+        SELECT
+            (SELECT last_updated FROM sync_metadata WHERE id = 1) AS last_updated,
+            (SELECT COUNT(*) FROM items WHERE item_type = 'movie') AS total_movies,
+            (SELECT COUNT(*) FROM items WHERE item_type = 'show') AS total_shows,
+            (SELECT COUNT(*) FROM servers) AS server_count
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    let last_updated: Option<DateTime<Utc>> = row.try_get("last_updated").ok().flatten();
+    let total_movies: i64 = row.try_get::<i64, _>("total_movies").unwrap_or(0);
+    let total_shows: i64 = row.try_get::<i64, _>("total_shows").unwrap_or(0);
+    let server_count: i64 = row.try_get::<i64, _>("server_count").unwrap_or(0);
+    Ok(SystemInfo {
+        last_updated,
+        sync_interval_hours,
+        total_movies,
+        total_shows,
+        server_count,
+    })
+}
+
+pub async fn update_sync_metadata_last_updated(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_metadata (id, last_updated)
+        VALUES (1, $1)
+        ON CONFLICT (id) DO UPDATE SET last_updated = EXCLUDED.last_updated
+        "#,
+    )
+    .bind(Utc::now())
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn get_server_libraries(
@@ -82,10 +129,37 @@ pub async fn get_library_items(
 ) -> Result<Vec<Item>, sqlx::Error> {
     sqlx::query(
         r#"
-        SELECT id, guid, parent_id, title, summary, item_type, year, thumb_path, art_path, index, leaf_count, updated_at
-        FROM items
-        WHERE server_id = $1 AND library_id = $2 AND item_type IN ('movie', 'show')
-        ORDER BY title ASC
+        SELECT
+            i.id,
+            i.guid,
+            i.parent_id,
+            i.title,
+            i.summary,
+            i.item_type,
+            i.year,
+            i.thumb_path,
+            i.art_path,
+            i.index,
+            i.leaf_count,
+            i.updated_at,
+            i.content_rating,
+            i.duration,
+            i.originally_available_at,
+            i.studio,
+            (SELECT mp.video_resolution
+             FROM media_parts mp
+             WHERE mp.item_id = i.id AND mp.server_id = i.server_id
+             ORDER BY CASE
+                 WHEN mp.video_resolution ILIKE '%2160%' OR mp.video_resolution ILIKE '%4k%' THEN 4
+                 WHEN mp.video_resolution ILIKE '%1080%' THEN 3
+                 WHEN mp.video_resolution ILIKE '%720%' THEN 2
+                 WHEN mp.video_resolution ILIKE '%480%' THEN 1
+                 ELSE 0
+             END DESC
+             LIMIT 1) AS best_resolution
+        FROM items i
+        WHERE i.server_id = $1 AND i.library_id = $2 AND i.item_type IN ('movie', 'show')
+        ORDER BY i.title ASC
         "#,
     )
     .bind(server_id)
@@ -96,6 +170,15 @@ pub async fn get_library_items(
     .map(|row| {
         use sqlx::Row;
         let id: String = row.try_get("id")?;
+        let best_resolution: Option<String> = row.try_get("best_resolution").ok().flatten();
+        let media = best_resolution
+            .map(|r| {
+                vec![Media {
+                    video_resolution: Some(r),
+                    parts: vec![],
+                }]
+            })
+            .unwrap_or_default();
         Ok(Item {
             guid: row.try_get("guid")?,
             rating_key: id.clone(),
@@ -105,12 +188,19 @@ pub async fn get_library_items(
             summary: row.try_get("summary")?,
             item_type: row.try_get("item_type")?,
             year: row.try_get::<i16, _>("year").unwrap_or(0) as u16,
-            media: Vec::new(),
+            media,
             thumb: row.try_get("thumb_path")?,
             art: row.try_get("art_path")?,
             index: row.try_get("index")?,
             leaf_count: row.try_get("leaf_count")?,
             updated_at: row.try_get("updated_at")?,
+            content_rating: row.try_get("content_rating")?,
+            duration: row.try_get("duration")?,
+            originally_available_at: row
+                .try_get::<Option<chrono::NaiveDate>, _>("originally_available_at")
+                .ok()
+                .flatten(),
+            studio: row.try_get("studio")?,
         })
     })
     .collect()
@@ -219,14 +309,24 @@ pub async fn upsert_items_batch(
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
     let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
     let updated_ats: Vec<Option<i64>> = items.iter().map(|i| i.item.updated_at).collect();
+    let content_ratings: Vec<Option<String>> = items
+        .iter()
+        .map(|i| i.item.content_rating.clone())
+        .collect();
+    let durations: Vec<Option<i64>> = items.iter().map(|i| i.item.duration).collect();
+    let originally_available_at: Vec<Option<chrono::NaiveDate>> = items
+        .iter()
+        .map(|i| i.item.originally_available_at)
+        .collect();
+    let studios: Vec<Option<String>> = items.iter().map(|i| i.item.studio.clone()).collect();
     let sync_times: Vec<DateTime<Utc>> = vec![sync_time; items.len()];
 
     let result = sqlx::query(
         r#"
-        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count, updated_at)
+        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count, updated_at, content_rating, duration, originally_available_at, studio)
         SELECT * FROM UNNEST(
             $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::smallint[],
-            $9::text[], $10::text[], $11::timestamptz[], $12::text[], $13::integer[], $14::integer[], $15::bigint[]
+            $9::text[], $10::text[], $11::timestamptz[], $12::text[], $13::integer[], $14::integer[], $15::bigint[], $16::text[], $17::bigint[], $18::date[], $19::text[]
         )
         ON CONFLICT (id, server_id) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
@@ -238,7 +338,11 @@ pub async fn upsert_items_batch(
             guid = EXCLUDED.guid,
             index = EXCLUDED.index,
             leaf_count = EXCLUDED.leaf_count,
-            updated_at = EXCLUDED.updated_at
+            updated_at = EXCLUDED.updated_at,
+            content_rating = EXCLUDED.content_rating,
+            duration = EXCLUDED.duration,
+            originally_available_at = EXCLUDED.originally_available_at,
+            studio = EXCLUDED.studio
         "#,
     )
     .bind(&ids[..])
@@ -256,6 +360,10 @@ pub async fn upsert_items_batch(
     .bind(&indices[..])
     .bind(&leaf_counts[..])
     .bind(&updated_ats[..])
+    .bind(&content_ratings[..])
+    .bind(&durations[..])
+    .bind(&originally_available_at[..])
+    .bind(&studios[..])
     .execute(pool)
     .await?;
 
@@ -468,6 +576,8 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
         SELECT
             i.guid,
             i.title, i.summary, i.item_type, i.year, i.thumb_path,
+            i.content_rating,
+            i.duration,
             s.id as "server_id!",
             s.name as "server_name!",
             ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank
@@ -502,7 +612,7 @@ pub async fn get_details_by_guid(
     let items = sqlx::query_as!(
         ItemByGuid,
         r#"
-        SELECT i.id, i.server_id, s.name as "server_name!", i.guid as "guid?", i.title, i.summary, i.year, i.art_path, i.thumb_path, i.item_type
+        SELECT i.id, i.server_id, s.name as "server_name!", i.guid as "guid?", i.title, i.summary, i.year, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration
         FROM items i
         JOIN servers s ON i.server_id = s.id
         WHERE i.guid = $1
@@ -579,6 +689,8 @@ pub async fn get_details_by_guid(
         art_path: first_item.art_path.clone(),
         thumb_path: first_item.thumb_path.clone(),
         item_type: first_item.item_type.clone(),
+        content_rating: first_item.content_rating.clone(),
+        duration: first_item.duration,
         available_on,
     }))
 }
@@ -646,6 +758,8 @@ pub async fn get_season_episodes(
             e.summary as "summary?", 
             e.thumb_path, 
             e.index,
+            e.content_rating,
+            e.duration,
             mp.video_resolution, 
             s.language as "subtitle_language"
         FROM items e
@@ -680,6 +794,8 @@ pub async fn get_season_episodes(
                 summary: row.summary.clone(),
                 thumb_path: row.thumb_path.clone(),
                 index: row.index,
+                content_rating: row.content_rating.clone(),
+                duration: row.duration,
                 versions: Vec::new(),
             });
 

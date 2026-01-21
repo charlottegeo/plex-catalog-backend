@@ -1,15 +1,15 @@
 use crate::models::Item;
 use crate::plex_client::PlexClient;
-use actix_web::{web, App, HttpServer};
+use actix_web::{App, HttpServer, web};
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
 use std::result::Result as StdResult;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
 mod auth;
 mod db;
@@ -18,7 +18,7 @@ mod models;
 mod plex_client;
 mod routes;
 
-const SYNC_INTERVAL_HOURS: u64 = 12;
+pub const SYNC_INTERVAL_HOURS: u64 = 6;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const BATCH_SIZE: usize = 75;
 const DISCOVERY_WORKER_COUNT: usize = 2;
@@ -114,8 +114,9 @@ async fn process_media_parts(
     sync_time: chrono::DateTime<chrono::Utc>,
     db_pool: &sqlx::PgPool,
 ) -> bool {
-    if let Some(media) = item.media.first() {
-        if let Some(part) = media.parts.first() {
+    let mut at_least_one_part_with_streams = false;
+    for media in &item.media {
+        for part in &media.parts {
             if db::upsert_media_part(db_pool, part, &item.rating_key, server_id, media, sync_time)
                 .await
                 .is_ok()
@@ -124,29 +125,28 @@ async fn process_media_parts(
                     stream::iter(&part.streams)
                         .for_each_concurrent(2, |stream| {
                             let db_p = db_pool.clone();
+                            let part_id = part.id;
                             let s_id = server_id.to_string();
                             async move {
                                 if let Err(e) =
-                                    db::upsert_stream(&db_p, stream, part.id, &s_id, sync_time)
+                                    db::upsert_stream(&db_p, stream, part_id, &s_id, sync_time)
                                         .await
                                 {
                                     tracing::error!(
                                         "Database Error: Failed to upsert stream for part {}: {:?}",
-                                        part.id,
+                                        part_id,
                                         e
                                     );
                                 }
                             }
                         })
                         .await;
-                    return true;
-                } else {
-                    return false;
+                    at_least_one_part_with_streams = true;
                 }
             }
         }
     }
-    false
+    at_least_one_part_with_streams
 }
 
 async fn process_discovery_task(
@@ -456,8 +456,8 @@ async fn process_detail_task(
                 .get_item_details(&server_uri, &server_token, &item.rating_key)
                 .await
             {
-                if let Some(media) = details.media.first() {
-                    if let Some(part) = media.parts.first() {
+                for media in &details.media {
+                    for part in &media.parts {
                         if db::upsert_media_part(
                             &state.db_pool,
                             part,
@@ -469,18 +469,19 @@ async fn process_detail_task(
                         .await
                         .is_ok()
                         {
+                            let part_id = part.id;
                             stream::iter(&part.streams)
                                 .for_each_concurrent(2, |stream| {
                                     let db_p = state.db_pool.clone();
                                     let s_id = server_id.clone();
                                     async move {
                                         if let Err(e) = db::upsert_stream(
-                                            &db_p, stream, part.id, &s_id, sync_time,
+                                            &db_p, stream, part_id, &s_id, sync_time,
                                         )
                                         .await {
                                             tracing::error!(
-                                                "Database Error: Failed to upsert stream for part {}: {:?}", 
-                                                part.id,
+                                                "Database Error: Failed to upsert stream for part {}: {:?}",
+                                                part_id,
                                                 e
                                             );
                                         }
@@ -868,6 +869,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     tracing::info!("Sync complete. Pruning orphaned data...");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
+    }
+
+    if let Err(e) = db::update_sync_metadata_last_updated(&db_pool).await {
+        tracing::error!("Database Error: Failed to update sync_metadata: {:?}", e);
     }
 
     let duration = start_instant.elapsed();

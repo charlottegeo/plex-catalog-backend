@@ -1,13 +1,13 @@
 use actix_web::{
-    dev::{Service, ServiceRequest, ServiceResponse, Transform},
     FromRequest, HttpMessage, HttpResponse,
+    dev::{Service, ServiceRequest, ServiceResponse, Transform},
 };
-use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose, Engine as _};
+use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use futures::{executor::block_on, future::LocalBoxFuture};
 use isahc::ReadResponseExt;
 use lazy_static::lazy_static;
-use log::{log, Level};
+use log::{Level, log};
 use openssl::{
     bn::BigNum,
     hash::MessageDigest,
@@ -18,7 +18,7 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use std::future::{ready, Ready};
+use std::future::{Ready, ready};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::Mutex;
@@ -237,10 +237,10 @@ pub struct CSHAuthService<S> {
 impl<S> Transform<S, ServiceRequest> for CSHAuth
 where
     S: Service<
-        ServiceRequest,
-        Response = ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
+            ServiceRequest,
+            Response = ServiceResponse<actix_web::body::BoxBody>,
+            Error = actix_web::Error,
+        >,
     S::Future: 'static,
 {
     type Response = ServiceResponse<actix_web::body::BoxBody>;
@@ -260,10 +260,10 @@ where
 impl<S> Service<ServiceRequest> for CSHAuthService<S>
 where
     S: Service<
-        ServiceRequest,
-        Response = ServiceResponse<actix_web::body::BoxBody>,
-        Error = actix_web::Error,
-    >,
+            ServiceRequest,
+            Response = ServiceResponse<actix_web::body::BoxBody>,
+            Error = actix_web::Error,
+        >,
     S::Future: 'static,
 {
     type Response = ServiceResponse<actix_web::body::BoxBody>;

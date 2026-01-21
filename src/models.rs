@@ -1,6 +1,20 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
+
+fn deserialize_opt_naive_date<'de, D>(d: D) -> Result<Option<NaiveDate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(d)?;
+    Ok(opt.and_then(|s| {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+    }))
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct User {
@@ -88,6 +102,18 @@ pub struct Item {
     pub art: Option<String>,
     #[serde(rename = "updatedAt")]
     pub updated_at: Option<i64>,
+    #[serde(rename = "contentRating", default)]
+    pub content_rating: Option<String>,
+    #[serde(default)]
+    pub duration: Option<i64>,
+    #[serde(
+        rename = "originallyAvailableAt",
+        default,
+        deserialize_with = "deserialize_opt_naive_date"
+    )]
+    pub originally_available_at: Option<NaiveDate>,
+    #[serde(default)]
+    pub studio: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -127,6 +153,18 @@ pub struct ItemWithDetails {
     pub art: Option<String>,
     #[serde(rename = "updatedAt")]
     pub updated_at: Option<i64>,
+    #[serde(rename = "contentRating", default)]
+    pub content_rating: Option<String>,
+    #[serde(default)]
+    pub duration: Option<i64>,
+    #[serde(
+        rename = "originallyAvailableAt",
+        default,
+        deserialize_with = "deserialize_opt_naive_date"
+    )]
+    pub originally_available_at: Option<NaiveDate>,
+    #[serde(default)]
+    pub studio: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -153,6 +191,16 @@ pub struct Stream {
     pub format: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemInfo {
+    pub last_updated: Option<DateTime<Utc>>,
+    pub sync_interval_hours: u64,
+    pub total_movies: i64,
+    pub total_shows: i64,
+    pub server_count: i64,
+}
+
 #[derive(Serialize, FromRow, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DbServer {
@@ -175,6 +223,8 @@ pub struct SearchResult {
     pub thumb_path: Option<String>,
     pub server_id: String,
     pub server_name: String,
+    pub content_rating: Option<String>,
+    pub duration: Option<i64>,
     #[allow(dead_code)]
     pub rank: Option<f32>,
 }
@@ -209,6 +259,8 @@ pub struct MediaDetails {
     pub art_path: Option<String>,
     pub thumb_path: Option<String>,
     pub item_type: String,
+    pub content_rating: Option<String>,
+    pub duration: Option<i64>,
     pub available_on: Vec<ServerAvailability>,
 }
 
@@ -232,6 +284,8 @@ pub struct EpisodeDetails {
     pub summary: Option<String>,
     pub thumb_path: Option<String>,
     pub index: Option<i32>,
+    pub content_rating: Option<String>,
+    pub duration: Option<i64>,
     pub versions: Vec<MediaVersion>,
 }
 

@@ -1,6 +1,6 @@
 use crate::auth::CSHAuth;
-use crate::{db, error::ApiError, models::SearchQuery, AppState};
-use actix_web::{get, http::header, web, HttpResponse, Responder, Result};
+use crate::{AppState, SYNC_INTERVAL_HOURS, db, error::ApiError, models::SearchQuery};
+use actix_web::{HttpResponse, Responder, Result, get, http::header, web};
 
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
@@ -16,6 +16,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             .wrap(CSHAuth::enabled())
             .service(get_servers_handler)
+            .service(get_system_info_handler)
             .service(get_libraries_handler)
             .service(get_library_items_handler)
             .service(get_item_details_handler)
@@ -32,6 +33,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 async fn get_servers_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
     let servers = db::get_all_servers(&state.db_pool).await?;
     Ok(HttpResponse::Ok().json(servers))
+}
+
+#[get("/system/info")]
+async fn get_system_info_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
+    let info = db::get_system_info(&state.db_pool, SYNC_INTERVAL_HOURS).await?;
+    Ok(HttpResponse::Ok().json(info))
 }
 
 #[get("/servers/{server_id}/libraries")]
