@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT i.id, i.server_id, s.name as \"server_name!\", i.guid as \"guid?\", i.title, i.summary, i.year, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE i.guid = $1\n        ",
+  "query": "\n        SELECT i.id, i.server_id, s.name as \"server_name!\", i.guid as \"guid?\", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE i.guid = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -40,26 +40,31 @@
       },
       {
         "ordinal": 7,
+        "name": "originally_available_at",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 8,
         "name": "art_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "thumb_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "item_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "content_rating",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "duration",
         "type_info": "Int8"
       }
@@ -79,10 +84,11 @@
       true,
       true,
       true,
+      true,
       false,
       true,
       true
     ]
   },
-  "hash": "12c02627c5cc0ef091e8f74b44d2d6442317c92cc45ccdbd94f0affad5ac6220"
+  "hash": "d5ec11f91bc97a7ed115946de113c219b3a6197f6311c81802e6d0473100b5e0"
 }

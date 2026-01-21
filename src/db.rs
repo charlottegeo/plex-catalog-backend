@@ -14,6 +14,7 @@ struct ItemByGuid {
     title: String,
     summary: Option<String>,
     year: Option<i16>,
+    originally_available_at: Option<chrono::NaiveDate>,
     art_path: Option<String>,
     thumb_path: Option<String>,
     item_type: String,
@@ -578,6 +579,7 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
             i.title, i.summary, i.item_type, i.year, i.thumb_path,
             i.content_rating,
             i.duration,
+            i.originally_available_at,
             s.id as "server_id!",
             s.name as "server_name!",
             ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank
@@ -612,7 +614,7 @@ pub async fn get_details_by_guid(
     let items = sqlx::query_as!(
         ItemByGuid,
         r#"
-        SELECT i.id, i.server_id, s.name as "server_name!", i.guid as "guid?", i.title, i.summary, i.year, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration
+        SELECT i.id, i.server_id, s.name as "server_name!", i.guid as "guid?", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration
         FROM items i
         JOIN servers s ON i.server_id = s.id
         WHERE i.guid = $1
@@ -686,6 +688,7 @@ pub async fn get_details_by_guid(
         title: first_item.title.clone(),
         summary: first_item.summary.clone(),
         year: first_item.year,
+        originally_available_at: first_item.originally_available_at,
         art_path: first_item.art_path.clone(),
         thumb_path: first_item.thumb_path.clone(),
         item_type: first_item.item_type.clone(),

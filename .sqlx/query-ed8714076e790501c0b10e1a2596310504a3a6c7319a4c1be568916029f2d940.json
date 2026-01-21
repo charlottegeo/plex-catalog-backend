@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.guid IS NOT NULL AND\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
+  "query": "\n        SELECT\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.guid IS NOT NULL AND\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
   "describe": {
     "columns": [
       {
@@ -45,16 +45,21 @@
       },
       {
         "ordinal": 8,
+        "name": "originally_available_at",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 9,
         "name": "server_id!",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "server_name!",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "rank",
         "type_info": "Float4"
       }
@@ -73,10 +78,11 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       null
     ]
   },
-  "hash": "774fc241a3750f58abee870ce1100a216260127a8650d23da293d1263449d056"
+  "hash": "ed8714076e790501c0b10e1a2596310504a3a6c7319a4c1be568916029f2d940"
 }
