@@ -308,7 +308,12 @@ pub async fn upsert_items_batch(
         .collect();
     let guids: Vec<Option<String>> = items
         .iter()
-        .map(|i| i.item.guid.as_ref().map(|s| s.clone()))
+        .map(|i| {
+            i.item
+                .guid
+                .as_ref()
+                .map(|s| s.strip_prefix("plex://").unwrap_or(s).to_string())
+        })
         .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
     let leaf_counts: Vec<Option<i32>> = items.iter().map(|i| i.item.leaf_count).collect();
