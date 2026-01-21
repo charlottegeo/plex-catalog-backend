@@ -1,7 +1,6 @@
 target/
 .env
 *.local
-.sqlx/
 .git/
 .gitignore
 Dockerfile
