@@ -67,8 +67,8 @@ pub async fn get_system_info(
         r#"
         SELECT
             (SELECT last_updated FROM sync_metadata WHERE id = 1) AS last_updated,
-            (SELECT COUNT(*) FROM items WHERE item_type = 'movie') AS total_movies,
-            (SELECT COUNT(*) FROM items WHERE item_type = 'show') AS total_shows,
+            (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'movie' AND guid IS NOT NULL) AS total_movies,
+            (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'show' AND guid IS NOT NULL) AS total_shows,
             (SELECT COUNT(*) FROM servers) AS server_count
         "#,
     )
