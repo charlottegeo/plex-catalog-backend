@@ -406,16 +406,44 @@ pub async fn touch_items_batch(
         return Ok(());
     }
 
+    let query = r#"
+        WITH RECURSIVE affected_hierarchy AS (
+            SELECT id, server_id 
+            FROM items 
+            WHERE id = ANY($1) AND server_id = $2
+            
+            UNION
+            
+            SELECT i.id, i.server_id
+            FROM items i
+            JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = ah.server_id
+        )
+        UPDATE items 
+        SET last_seen = $3
+        FROM affected_hierarchy ah
+        WHERE items.id = ah.id AND items.server_id = ah.server_id;
+    "#;
+
+    sqlx::query(query)
+        .bind(item_ids)
+        .bind(server_id)
+        .bind(sync_time)
+        .execute(pool)
+        .await?;
+
     sqlx::query(
         r#"
-        UPDATE items SET last_seen = $3 
-        WHERE server_id = $2 
-        AND (
-            id = ANY($1) 
-            OR parent_id = ANY($1) 
-            OR parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        UPDATE media_parts 
+        SET last_seen = $3
+        WHERE server_id = $2 AND item_id = ANY(
+            WITH RECURSIVE affected_hierarchy AS (
+                SELECT id FROM items WHERE id = ANY($1) AND server_id = $2
+                UNION
+                SELECT i.id FROM items i
+                JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = $2
+            ) SELECT id FROM affected_hierarchy
         )
-        "#,
+    "#,
     )
     .bind(item_ids)
     .bind(server_id)
@@ -425,38 +453,21 @@ pub async fn touch_items_batch(
 
     sqlx::query(
         r#"
-        UPDATE media_parts SET last_seen = $3
-        FROM items i
-        WHERE media_parts.item_id = i.id 
-        AND media_parts.server_id = i.server_id
-        AND i.server_id = $2
-        AND (
-            i.id = ANY($1) 
-            OR i.parent_id = ANY($1) 
-            OR i.parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        UPDATE streams 
+        SET last_seen = $3
+        WHERE server_id = $2 AND media_part_id IN (
+            SELECT mp.id 
+            FROM media_parts mp
+            WHERE mp.server_id = $2 AND mp.item_id = ANY(
+                WITH RECURSIVE affected_hierarchy AS (
+                    SELECT id FROM items WHERE id = ANY($1) AND server_id = $2
+                    UNION
+                    SELECT i.id FROM items i
+                    JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = $2
+                ) SELECT id FROM affected_hierarchy
+            )
         )
-        "#,
-    )
-    .bind(item_ids)
-    .bind(server_id)
-    .bind(sync_time)
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        UPDATE streams SET last_seen = $3
-        FROM media_parts mp
-        JOIN items i ON mp.item_id = i.id AND mp.server_id = i.server_id
-        WHERE streams.media_part_id = mp.id 
-        AND streams.server_id = mp.server_id
-        AND i.server_id = $2
-        AND (
-            i.id = ANY($1) 
-            OR i.parent_id = ANY($1) 
-            OR i.parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
-        )
-        "#,
+    "#,
     )
     .bind(item_ids)
     .bind(server_id)
@@ -466,6 +477,7 @@ pub async fn touch_items_batch(
 
     Ok(())
 }
+
 pub async fn upsert_media_part(
     pool: &PgPool,
     part: &Part,
