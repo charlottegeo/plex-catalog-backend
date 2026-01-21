@@ -198,7 +198,8 @@ pub struct SystemInfo {
     pub sync_interval_hours: u64,
     pub total_movies: i64,
     pub total_shows: i64,
-    pub server_count: i64,
+    pub online_servers: i64,
+    pub offline_servers: i64,
 }
 
 #[derive(Serialize, FromRow, Debug, Clone)]

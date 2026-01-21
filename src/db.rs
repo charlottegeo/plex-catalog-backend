@@ -69,7 +69,8 @@ pub async fn get_system_info(
             (SELECT last_updated FROM sync_metadata WHERE id = 1) AS last_updated,
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'movie' AND guid IS NOT NULL) AS total_movies,
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'show' AND guid IS NOT NULL) AS total_shows,
-            (SELECT COUNT(*) FROM servers) AS server_count
+            (SELECT COUNT(*) FROM servers WHERE is_online = TRUE) AS online_servers,
+            (SELECT COUNT(*) FROM servers WHERE is_online = FALSE) AS offline_servers
         "#,
     )
     .fetch_one(pool)
@@ -77,13 +78,15 @@ pub async fn get_system_info(
     let last_updated: Option<DateTime<Utc>> = row.try_get("last_updated").ok().flatten();
     let total_movies: i64 = row.try_get::<i64, _>("total_movies").unwrap_or(0);
     let total_shows: i64 = row.try_get::<i64, _>("total_shows").unwrap_or(0);
-    let server_count: i64 = row.try_get::<i64, _>("server_count").unwrap_or(0);
+    let online_servers: i64 = row.try_get::<i64, _>("online_servers").unwrap_or(0);
+    let offline_servers: i64 = row.try_get::<i64, _>("offline_servers").unwrap_or(0);
     Ok(SystemInfo {
         last_updated,
         sync_interval_hours,
         total_movies,
         total_shows,
-        server_count,
+        online_servers,
+        offline_servers,
     })
 }
 
