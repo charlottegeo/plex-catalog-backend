@@ -796,8 +796,8 @@ pub async fn get_season_episodes(
           AND (
             e.parent_id = $1
             OR (
-                e.parent_id = (SELECT parent_id FROM items WHERE id = $1 AND item_type = 'season')
-                AND EXISTS (SELECT 1 FROM items WHERE id = $1 AND item_type = 'season')
+                e.parent_id = (SELECT parent_id FROM items WHERE id = $1 AND server_id = $2 AND item_type = 'season')
+                AND EXISTS (SELECT 1 FROM items WHERE id = $1 AND server_id = $2 AND item_type = 'season')
             )
             OR e.id = $1
           )
@@ -808,6 +808,7 @@ pub async fn get_season_episodes(
     )
     .fetch_all(pool)
     .await?;
+
     let mut episodes: std::collections::HashMap<String, EpisodeDetails> =
         std::collections::HashMap::new();
 

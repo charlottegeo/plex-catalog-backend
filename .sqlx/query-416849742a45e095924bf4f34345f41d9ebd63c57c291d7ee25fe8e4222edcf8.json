@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            e.id, \n            e.title, \n            e.summary as \"summary?\", \n            e.thumb_path, \n            e.index,\n            e.content_rating,\n            e.duration,\n            mp.video_resolution, \n            s.language as \"subtitle_language\"\n        FROM items e\n        LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE e.server_id = $2 \n          AND e.item_type = 'episode'\n          AND (\n            e.parent_id = $1\n            OR (\n                e.parent_id = (SELECT parent_id FROM items WHERE id = $1 AND item_type = 'season')\n                AND EXISTS (SELECT 1 FROM items WHERE id = $1 AND item_type = 'season')\n            )\n            OR e.id = $1\n          )\n        ORDER BY e.index ASC\n        ",
+  "query": "\n        SELECT\n            e.id, \n            e.title, \n            e.summary as \"summary?\", \n            e.thumb_path, \n            e.index,\n            e.content_rating,\n            e.duration,\n            mp.video_resolution, \n            s.language as \"subtitle_language\"\n        FROM items e\n        LEFT JOIN media_parts mp ON mp.item_id = e.id AND mp.server_id = e.server_id\n        LEFT JOIN streams s ON s.media_part_id = mp.id AND s.server_id = mp.server_id AND s.stream_type = 3\n        WHERE e.server_id = $2 \n          AND e.item_type = 'episode'\n          AND (\n            e.parent_id = $1\n            OR (\n                e.parent_id = (SELECT parent_id FROM items WHERE id = $1 AND server_id = $2 AND item_type = 'season')\n                AND EXISTS (SELECT 1 FROM items WHERE id = $1 AND server_id = $2 AND item_type = 'season')\n            )\n            OR e.id = $1\n          )\n        ORDER BY e.index ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -67,5 +67,5 @@
       true
     ]
   },
-  "hash": "c19c7fa3055024bea2aec8276c73402c3f249d87ee85966ca5d27826768df974"
+  "hash": "416849742a45e095924bf4f34345f41d9ebd63c57c291d7ee25fe8e4222edcf8"
 }
