@@ -236,6 +236,18 @@ pub struct SearchQuery {
     pub q: String,
 }
 
+#[derive(Deserialize)]
+pub struct ImageQuery {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct CachedImage {
+    pub bytes: bytes::Bytes,
+    pub content_type: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaVersion {

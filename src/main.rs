@@ -1,7 +1,6 @@
-use crate::models::Item;
+use crate::models::{CachedImage, Item};
 use crate::plex_client::PlexClient;
 use actix_web::{App, HttpServer, web};
-use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
@@ -27,7 +26,7 @@ const DETAIL_WORKER_COUNT: usize = 2;
 pub struct AppState {
     pub plex_client: PlexClient,
     pub db_pool: sqlx::PgPool,
-    pub image_cache: Cache<String, Bytes>,
+    pub image_cache: Cache<String, CachedImage>,
     pub sync_semaphore: Arc<Semaphore>,
 }
 
@@ -919,7 +918,8 @@ async fn main() -> std::io::Result<()> {
         plex_client: PlexClient::new(),
         db_pool: db_pool.clone(),
         image_cache: Cache::builder()
-            .max_capacity(500 * 1024 * 1024)
+            .max_capacity(256 * 1024 * 1024)
+            .weigher(|_key, value: &CachedImage| -> u32 { value.bytes.len() as u32 })
             .time_to_live(Duration::from_secs(12 * 60 * 60))
             .build(),
         sync_semaphore: Arc::new(Semaphore::new(5)),

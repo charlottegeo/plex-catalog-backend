@@ -1,5 +1,9 @@
 use crate::auth::CSHAuth;
-use crate::{AppState, SYNC_INTERVAL_HOURS, db, error::ApiError, models::SearchQuery};
+use crate::{
+    AppState, SYNC_INTERVAL_HOURS, db,
+    error::ApiError,
+    models::{ImageQuery, SearchQuery},
+};
 use actix_web::{HttpResponse, Responder, Result, get, http::header, web};
 
 async fn get_server_details_or_404(
@@ -108,17 +112,25 @@ async fn get_item_children_handler(
 async fn get_image_handler(
     state: web::Data<AppState>,
     path: web::Path<(String, String)>,
+    query: web::Query<ImageQuery>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, image_path) = path.into_inner();
-    let cache_key = format!("{}/{}", server_id, image_path);
+    let width = query.width;
+    let height = query.height;
 
-    if let Some(image_bytes) = state.image_cache.get(&cache_key).await {
+    let cache_key = if let (Some(w), Some(h)) = (width, height) {
+        format!("{}/{}_{}x{}", server_id, image_path, w, h)
+    } else {
+        format!("{}/{}", server_id, image_path)
+    };
+
+    if let Some(cached_image) = state.image_cache.get(&cache_key).await {
         return Ok(HttpResponse::Ok()
-            .content_type("image/jpeg")
+            .content_type(cached_image.content_type.as_str())
             .insert_header(header::CacheControl(vec![header::CacheDirective::MaxAge(
                 3600u32,
             )]))
-            .body(image_bytes));
+            .body(cached_image.bytes));
     }
 
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
@@ -128,6 +140,8 @@ async fn get_image_handler(
             &server_details.connection_uri,
             &server_details.access_token,
             &image_path,
+            width,
+            height,
         )
         .await?;
 
@@ -140,10 +154,12 @@ async fn get_image_handler(
 
     let image_bytes = image_response.bytes().await.map_err(ApiError::from)?;
 
-    state
-        .image_cache
-        .insert(cache_key, image_bytes.clone())
-        .await;
+    let cached_image = crate::models::CachedImage {
+        bytes: image_bytes.clone(),
+        content_type: content_type.clone(),
+    };
+
+    state.image_cache.insert(cache_key, cached_image).await;
 
     Ok(HttpResponse::Ok()
         .content_type(content_type)

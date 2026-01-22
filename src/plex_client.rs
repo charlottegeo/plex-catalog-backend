@@ -194,19 +194,35 @@ impl PlexClient {
         server_uri: &str,
         server_token: &str,
         image_path: &str,
+        width: Option<u32>,
+        height: Option<u32>,
     ) -> Result<Response, reqwest::Error> {
-        let full_image_url = format!(
-            "{}/{}",
-            server_uri.trim_end_matches('/'),
-            image_path.trim_start_matches('/')
-        );
-        let response = self
-            .http_client
-            .get(full_image_url)
+        let base_url = server_uri.trim_end_matches('/');
+
+        let url = if let (Some(w), Some(h)) = (width, height) {
+            let internal_path = if image_path.starts_with('/') {
+                image_path.to_string()
+            } else {
+                format!("/{}", image_path)
+            };
+
+            format!(
+                "{}/photo/:/transcode?url={}&width={}&height={}&format=jpeg&minSize=1&upscale=1&X-Plex-Token={}",
+                base_url,
+                urlencoding::encode(&internal_path),
+                w,
+                h,
+                server_token
+            )
+        } else {
+            format!("{}/{}", base_url, image_path.trim_start_matches('/'))
+        };
+
+        self.http_client
+            .get(url)
             .header("X-Plex-Token", server_token)
             .send()
             .await?
-            .error_for_status()?;
-        Ok(response)
+            .error_for_status()
     }
 }

@@ -24,3 +24,4 @@ sqlx = {version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chro
 tokio = {version = "1.48.0", features = ["full"]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2.1"
