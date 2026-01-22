@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.guid IS NOT NULL AND\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
+  "query": "\n        SELECT\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
   "describe": {
     "columns": [
       {
@@ -84,5 +84,5 @@
       null
     ]
   },
-  "hash": "ed8714076e790501c0b10e1a2596310504a3a6c7319a4c1be568916029f2d940"
+  "hash": "3f77154607ce4732ae123f9c7ec5a496dc7914e75d4b315cc06311c196f39b19"
 }

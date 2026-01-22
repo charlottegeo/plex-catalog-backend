@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id, title, summary as \"summary?\", thumb_path, art_path, leaf_count\n            FROM items\n            WHERE id = $1 AND server_id = $2 AND item_type = 'show'\n            ",
+  "query": "\n                SELECT\n                    id, title, summary as \"summary?\", thumb_path, art_path, leaf_count\n                FROM items\n                WHERE id = $1 AND server_id = $2 AND item_type = 'show'\n                ",
   "describe": {
     "columns": [
       {
@@ -49,5 +49,5 @@
       true
     ]
   },
-  "hash": "151c604a0563519910712d57e9f241c249bc3d2017f1abd641c3659d5f820866"
+  "hash": "fcf65ebd5628654210d546dbdaacbdebb5d793691b8f785e2c6934603913efe7"
 }

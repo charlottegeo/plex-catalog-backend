@@ -308,11 +308,9 @@ pub async fn upsert_items_batch(
         .collect();
     let guids: Vec<Option<String>> = items
         .iter()
-        .map(|i| {
-            i.item
-                .guid
-                .as_ref()
-                .map(|s| s.strip_prefix("plex://").unwrap_or(s).to_string())
+        .map(|i| match &i.item.guid {
+            Some(g) => Some(g.strip_prefix("plex://").unwrap_or(g).to_string()),
+            None => Some(format!("local-{}-{}", i.server_id, i.item.rating_key)),
         })
         .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
@@ -590,7 +588,6 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
         .collect::<Vec<String>>()
         .join(" & ")
         + ":*";
-
     sqlx::query_as!(
         SearchResult,
         r#"
@@ -606,7 +603,6 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
         FROM items i
         JOIN servers s ON i.server_id = s.id
         WHERE
-            i.guid IS NOT NULL AND
             i.fts_document @@ to_tsquery('simple', $1)
             AND i.item_type IN ('movie', 'show')
         ORDER BY rank DESC
@@ -723,35 +719,7 @@ pub async fn get_show_seasons(
     show_id: &str,
     server_id: &str,
 ) -> Result<Vec<SeasonSummary>, sqlx::Error> {
-    let has_direct_episodes = sqlx::query!(
-        "SELECT COUNT(*) as count FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'episode'",
-        show_id,
-        server_id
-    )
-    .fetch_one(pool)
-    .await?
-    .count.unwrap_or(0) > 0;
-
-    if has_direct_episodes {
-        let show_as_season = sqlx::query_as!(
-            SeasonSummary,
-            r#"
-            SELECT
-                id, title, summary as "summary?", thumb_path, art_path, leaf_count
-            FROM items
-            WHERE id = $1 AND server_id = $2 AND item_type = 'show'
-            "#,
-            show_id,
-            server_id
-        )
-        .fetch_optional(pool)
-        .await?;
-
-        if let Some(show) = show_as_season {
-            return Ok(vec![show]);
-        }
-    }
-    sqlx::query_as!(
+    let seasons = sqlx::query_as!(
         SeasonSummary,
         r#"
         SELECT
@@ -764,7 +732,40 @@ pub async fn get_show_seasons(
         server_id
     )
     .fetch_all(pool)
-    .await
+    .await?;
+
+    if seasons.is_empty() {
+        let has_direct_episodes = sqlx::query!(
+            "SELECT 1 as exists FROM items WHERE parent_id = $1 AND server_id = $2 AND item_type = 'episode' LIMIT 1",
+            show_id,
+            server_id
+        )
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+
+        if has_direct_episodes {
+            let show_as_season = sqlx::query_as!(
+                SeasonSummary,
+                r#"
+                SELECT
+                    id, title, summary as "summary?", thumb_path, art_path, leaf_count
+                FROM items
+                WHERE id = $1 AND server_id = $2 AND item_type = 'show'
+                "#,
+                show_id,
+                server_id
+            )
+            .fetch_optional(pool)
+            .await?;
+
+            if let Some(show) = show_as_season {
+                return Ok(vec![show]);
+            }
+        }
+    }
+
+    Ok(seasons)
 }
 
 pub async fn get_season_episodes(
