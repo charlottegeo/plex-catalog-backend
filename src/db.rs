@@ -309,8 +309,10 @@ pub async fn upsert_items_batch(
     let guids: Vec<Option<String>> = items
         .iter()
         .map(|i| match &i.item.guid {
-            Some(g) => Some(g.strip_prefix("plex://").unwrap_or(g).to_string()),
-            None => Some(format!("local-{}-{}", i.server_id, i.item.rating_key)),
+            Some(g) if g.starts_with("plex://") => {
+                Some(g.strip_prefix("plex://").unwrap().to_string())
+            }
+            _ => Some(format!("local-{}-{}", i.server_id, i.item.rating_key)),
         })
         .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
