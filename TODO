@@ -1,0 +1,17 @@
+- Implement media request system
+    - Allow users to search for media through the discover endpoint
+        - When the user selects a piece of media, it should check the database to see if it is already there.
+            - If the media is already there, it will say that and list where (and what seasons are available, if it is a tv show). It will then ask if the user wants to request a different resolution
+            - In the case of a tv show it should also allow to select seasons of a TV show to request
+        - Users can then choose to submit a request with an optional resolution
+        - This could be new media or something like a specific season of an existing tv show or something
+        - should I just replace the library endpoint with discover?
+    - Send a ping to server owners who are opted in
+    - Check for media request fulfillment after every sync
+        - If a users media request is fulfilled, close the request and send a ping to the user telling them the media is available to watch + on what server
+
+- Ask RTP to set up pings
+- Add a play button when hovering over an episode thumbnail on a season page
+    - If the user clicks on a thumbnail it should open that episode
+
+- Look into making insert and search sql code faster/more efficient

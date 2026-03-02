@@ -319,3 +319,17 @@ impl From<DbServer> for Device {
         }
     }
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PingsBody {
+    pub username: String,
+    pub body: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+//will add more fields, just basic for now
+pub struct MediaRequest {
+    pub guid: String,
+    pub title: String, 
+    pub resolution: Option<String>,
+}
