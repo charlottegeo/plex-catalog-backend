@@ -17,7 +17,7 @@ mod models;
 mod plex_client;
 mod routes;
 
-pub const SYNC_INTERVAL_HOURS: u64 = 6;
+pub const SYNC_INTERVAL_HOURS: u64 = 3;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const DISCOVERY_WORKER_COUNT: usize = 2;
 const DETAIL_WORKER_COUNT: usize = 2;
