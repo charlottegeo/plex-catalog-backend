@@ -327,9 +327,12 @@ pub struct PingsBody {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-//will add more fields, just basic for now
 pub struct MediaRequest {
     pub guid: String,
-    pub title: String, 
+    pub title: String,
+    pub item_type: String,
+    pub year: Option<i16>,
+    pub seasons: Option<Vec<i32>>,
     pub resolution: Option<String>,
+    pub username: String,
 }

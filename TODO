@@ -15,3 +15,6 @@
     - If the user clicks on a thumbnail it should open that episode
 
 - Look into making insert and search sql code faster/more efficient
+
+note for frontend: 
+- even though the open in plex buttons lead to different servers, the text box says it is all on the same server (the first one in the list)
