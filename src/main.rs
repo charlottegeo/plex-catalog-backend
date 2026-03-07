@@ -183,6 +183,7 @@ async fn flush_item_buffer(
 }
 
 /// Fetches extras from Plex for a parent item and upserts them into the database.
+/// Also fetches media details for each extra.
 async fn sync_extras_for_parent(
     plex_client: &crate::plex_client::PlexClient,
     db_pool: &sqlx::PgPool,
@@ -247,7 +248,29 @@ async fn sync_extras_for_parent(
             parent_rating_key,
             e
         );
+        return;
     }
+    stream::iter(items)
+    .for_each_concurrent(2, |ctx| {
+        let p_client = plex_client.clone();
+        let s_uri = server_uri.to_string();
+        let s_token = server_token.to_string();
+        let s_id = server_id.to_string();
+        let pool = db_pool.clone();
+        async move {
+            if let Ok(Some(details)) = p_client
+                .get_item_details(&s_uri, &s_token, &ctx.item.rating_key)
+                .await 
+            {
+                let item_with_media = Item {
+                    media: details.media,
+                    ..ctx.item
+                };
+                process_media_parts(&item_with_media, &s_id, sync_time, &pool).await;
+            }
+        }
+    })
+    .await;
 }
 
 /// Upserts media parts and streams for an item.
@@ -563,6 +586,17 @@ async fn process_discovery_task(
                 }
                 "season" => {
                     drop(_permit);
+                    sync_extras_for_parent(
+                        &state.plex_client,
+                        &state.db_pool,
+                        &server_uri,
+                        &server_token,
+                        &item.rating_key,
+                        &library_key,
+                        &server_id,
+                        sync_time,
+                    )
+                    .await;
                 }
                 "movie" | "episode" => {
                     sync_extras_for_parent(
