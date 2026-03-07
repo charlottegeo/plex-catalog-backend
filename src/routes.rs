@@ -2,7 +2,11 @@ use crate::auth::CSHAuth;
 use crate::{
     db,
     error::ApiError,
-    models::{ImageQuery, SearchQuery},
+    models::{
+        DbServer, EpisodeDetails, ImageQuery, Item, ItemList, ItemWithDetails, Library,
+        MediaDetails, PlayQueueResponse, PlexExtra, SearchQuery, SearchResult, SeasonSummary,
+        SystemInfo,
+    },
     AppState, SYNC_INTERVAL_MINUTES,
 };
 use actix_web::{get, http::header, post, web, HttpResponse, Responder, Result};
@@ -10,7 +14,7 @@ use actix_web::{get, http::header, post, web, HttpResponse, Responder, Result};
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
     server_id: &str,
-) -> Result<crate::models::DbServer, ApiError> {
+) -> Result<DbServer, ApiError> {
     db::get_server_details(db_pool, server_id)
         .await?
         .ok_or_else(|| ApiError::NotFound("Server not found in database".to_string()))
@@ -42,7 +46,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 #[utoipa::path(
     get,
     path = "/api/servers",
-    responses((status = 200, description = "List of servers", body = Vec<crate::models::DbServer>))
+    responses((status = 200, description = "List of servers", body = Vec<DbServer>))
 )]
 #[get("/servers")]
 async fn get_servers_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
@@ -56,7 +60,7 @@ async fn get_servers_handler(state: web::Data<AppState>) -> Result<impl Responde
 #[utoipa::path(
     get,
     path = "/api/system/info",
-    responses((status = 200, description = "System info", body = crate::models::SystemInfo))
+    responses((status = 200, description = "System info", body = SystemInfo))
 )]
 #[get("/system/info")]
 async fn get_system_info_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
@@ -72,7 +76,7 @@ async fn get_system_info_handler(state: web::Data<AppState>) -> Result<impl Resp
     path = "/api/servers/{server_id}/libraries",
     params(("server_id" = String, Path, description = "Server ID (Plex client identifier)")),
     responses(
-        (status = 200, description = "List of libraries", body = Vec<crate::models::Library>),
+        (status = 200, description = "List of libraries", body = Vec<Library>),
         (status = 404, description = "Server not found in catalog")
     )
 )]
@@ -97,7 +101,7 @@ async fn get_libraries_handler(
         ("library_key" = String, Path, description = "Library section key from /libraries")
     ),
     responses(
-        (status = 200, description = "List of library items", body = Vec<crate::models::Item>),
+        (status = 200, description = "List of library items", body = Vec<Item>),
         (status = 404, description = "Server not found")
     )
 )]
@@ -122,7 +126,7 @@ async fn get_library_items_handler(
         ("rating_key" = String, Path, description = "Plex rating key of the item (e.g. from list/children)")
     ),
     responses(
-        (status = 200, description = "Item details", body = crate::models::ItemWithDetails),
+        (status = 200, description = "Item details", body = ItemWithDetails),
         (status = 404, description = "Server or item not found")
     )
 )]
@@ -160,7 +164,7 @@ async fn get_item_details_handler(
         ("rating_key" = String, Path, description = "Plex rating key of the parent movie/show/season/episode")
     ),
     responses(
-        (status = 200, description = "List of extras", body = Vec<crate::models::PlexExtra>),
+        (status = 200, description = "List of extras", body = Vec<PlexExtra>),
         (status = 404, description = "Server not found")
     )
 )]
@@ -185,7 +189,7 @@ async fn get_item_extras_handler(
         ("rating_key" = String, Path, description = "Plex rating key of the parent (show or season)")
     ),
     responses(
-        (status = 200, description = "List of child items", body = crate::models::ItemList),
+        (status = 200, description = "List of child items", body = ItemList),
         (status = 404, description = "Server not found")
     )
 )]
@@ -294,7 +298,7 @@ async fn get_image_handler(
     get,
     path = "/api/search",
     params(("q" = String, Query, description = "Search terms (full-text; multiple words supported)")),
-    responses((status = 200, description = "Search results", body = Vec<crate::models::SearchResult>))
+    responses((status = 200, description = "Search results", body = Vec<SearchResult>))
 )]
 #[get("/search")]
 async fn search_handler(
@@ -313,7 +317,7 @@ async fn search_handler(
     path = "/api/media/{guid}",
     params(("guid" = String, Path, description = "Media GUID (e.g. plex://movie/...)")),
     responses(
-        (status = 200, description = "Media details", body = crate::models::MediaDetails),
+        (status = 200, description = "Media details", body = MediaDetails),
         (status = 404, description = "Media not found")
     )
 )]
@@ -340,7 +344,7 @@ async fn get_media_details_handler(
         ("show_id" = String, Path, description = "Show rating key (from library items or children)")
     ),
     responses(
-        (status = 200, description = "List of seasons", body = Vec<crate::models::SeasonSummary>),
+        (status = 200, description = "List of seasons", body = Vec<SeasonSummary>),
         (status = 404, description = "Server not found")
     )
 )]
@@ -365,7 +369,7 @@ async fn get_seasons_handler(
         ("rating_key" = String, Path, description = "Item rating key to play (movie or episode)")
     ),
     responses(
-        (status = 200, description = "Play queue created", body = crate::models::PlayQueueResponse),
+        (status = 200, description = "Play queue created", body = PlayQueueResponse),
         (status = 404, description = "Server not found")
     )
 )]
@@ -412,7 +416,7 @@ async fn create_play_queue_handler(
         ("season_id" = String, Path, description = "Season rating key, or show rating key if show has no seasons")
     ),
     responses(
-        (status = 200, description = "List of episodes", body = Vec<crate::models::EpisodeDetails>),
+        (status = 200, description = "List of episodes", body = Vec<EpisodeDetails>),
         (status = 404, description = "Server not found")
     )
 )]
