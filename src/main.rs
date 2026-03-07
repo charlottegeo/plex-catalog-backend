@@ -87,7 +87,7 @@ impl Modify for SecurityAddon {
     info(
         title = "Plex Catalog Backend API",
         version = "1.0.0",
-        description = "API for browsing Plex media catalog with sync health and extras support"
+        description = "API for browsing a media catalog populated from Plex servers"
     )
 )]
 struct ApiDoc;
