@@ -1,65 +1,70 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
+  "query": "\n        SELECT\n            i.id as \"rating_key!\",\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "rating_key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
         "name": "guid",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "title",
         "type_info": "Text"
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "summary",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "item_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "year",
         "type_info": "Int2"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "thumb_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "content_rating",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "duration",
         "type_info": "Int8"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "originally_available_at",
         "type_info": "Date"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "server_id!",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "server_name!",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "rank",
         "type_info": "Float4"
       }
@@ -70,6 +75,7 @@
       ]
     },
     "nullable": [
+      false,
       true,
       false,
       true,
@@ -84,5 +90,5 @@
       null
     ]
   },
-  "hash": "3f77154607ce4732ae123f9c7ec5a496dc7914e75d4b315cc06311c196f39b19"
+  "hash": "df50c500b25110b95947d4fa6e3d8cc4873a9cdd64f1eae672b7806060627f3e"
 }

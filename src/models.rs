@@ -263,6 +263,7 @@ pub struct DbServer {
 #[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
+    pub rating_key: String,
     pub guid: Option<String>,
     pub title: String,
     pub summary: Option<String>,

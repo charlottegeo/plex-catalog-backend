@@ -632,6 +632,7 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
         SearchResult,
         r#"
         SELECT
+            i.id as "rating_key!",
             i.guid,
             i.title, i.summary, i.item_type, i.year, i.thumb_path,
             i.content_rating,
