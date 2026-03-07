@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 
 fn deserialize_opt_naive_date<'de, D>(d: D) -> Result<Option<NaiveDate>, D::Error>
 where
@@ -16,18 +17,21 @@ where
     }))
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex user with authentication token.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct User {
     #[serde(rename = "authToken")]
     pub auth_token: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex sign-in response containing user info.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct LoginResponse {
     pub user: User,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex device (server) with information needed to connect to the server.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Device {
     pub name: String,
     pub product: String,
@@ -39,25 +43,27 @@ pub struct Device {
     pub connections: Vec<Connection>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex server connection URI, and whether it is a local connection.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Connection {
     pub uri: String,
     pub local: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct LibraryMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: LibraryList,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct LibraryList {
     #[serde(rename = "Directory")]
     pub libraries: Vec<Library>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex library section (movies, shows, etc).
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Library {
     pub key: String,
     pub title: String,
@@ -65,19 +71,20 @@ pub struct Library {
     pub library_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct ItemMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: ItemList,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct ItemList {
     #[serde(rename = "Metadata")]
     pub items: Vec<Item>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Plex library item (movie, show, episode, extra, etc).
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Item {
     pub guid: Option<String>,
     #[serde(rename = "ratingKey")]
@@ -111,24 +118,56 @@ pub struct Item {
         default,
         deserialize_with = "deserialize_opt_naive_date"
     )]
+    #[schema(value_type = Option<String>)]
     pub originally_available_at: Option<NaiveDate>,
     #[serde(default)]
     pub studio: Option<String>,
+    /// Plex extra type (e.g. "trailer", "behindTheScenes") when item_type is "extra".
+    #[serde(rename = "extraType", default)]
+    pub extra_type: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Single bonus feature/extra from the database.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlexExtra {
+    #[serde(rename = "ratingKey")]
+    pub rating_key: Option<String>,
+    pub title: String,
+    pub key: String,
+    /// Plex extra type (e.g. "trailer", "behindTheScenes", "deleted_scene").
+    #[serde(rename = "extraType")]
+    pub extra_type: Option<String>,
+    pub thumb: Option<String>,
+}
+
+/// Container for extras returned by the database.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct PlexExtrasContainer {
+    #[serde(rename = "Metadata", alias = "Directory", default)]
+    pub metadata: Vec<PlexExtra>,
+}
+
+/// Response wrapper for Plex extras from the Plex API.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct PlexExtrasResponse {
+    #[serde(rename = "MediaContainer")]
+    pub media_container: PlexExtrasContainer,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct SingleItemMediaContainer {
     #[serde(rename = "MediaContainer")]
     pub media_container: SingleItemList,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct SingleItemList {
     #[serde(rename = "Metadata")]
     pub items: Vec<ItemWithDetails>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct ItemWithDetails {
     pub guid: Option<String>,
     #[serde(rename = "ratingKey")]
@@ -162,26 +201,27 @@ pub struct ItemWithDetails {
         default,
         deserialize_with = "deserialize_opt_naive_date"
     )]
+    #[schema(value_type = Option<String>)]
     pub originally_available_at: Option<NaiveDate>,
     #[serde(default)]
     pub studio: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Media {
     #[serde(rename = "videoResolution")]
     pub video_resolution: Option<String>,
     #[serde(rename = "Part", default)]
     pub parts: Vec<Part>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Part {
     pub id: i64,
     #[serde(rename = "Stream", default)]
     pub streams: Vec<Stream>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Stream {
     pub id: i64,
     #[serde(rename = "streamType")]
@@ -191,18 +231,24 @@ pub struct Stream {
     pub format: Option<String>,
 }
 
-#[derive(Serialize)]
+/// Information about the database and sync status.
+#[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemInfo {
+    #[schema(value_type = Option<String>)]
     pub last_updated: Option<DateTime<Utc>>,
-    pub sync_interval_hours: u64,
+    pub sync_interval_minutes: u64,
     pub total_movies: i64,
     pub total_shows: i64,
     pub online_servers: i64,
     pub offline_servers: i64,
+    /// Last sync error message if any.
+    pub last_error: Option<String>,
+    /// Whether a sync is currently in progress.
+    pub sync_in_progress: bool,
 }
 
-#[derive(Serialize, FromRow, Debug, Clone)]
+#[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DbServer {
     pub id: String,
@@ -210,10 +256,11 @@ pub struct DbServer {
     pub is_online: bool,
     pub access_token: String,
     pub connection_uri: String,
+    #[schema(value_type = String)]
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Serialize, FromRow, Debug, Clone)]
+#[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub guid: Option<String>,
@@ -221,6 +268,7 @@ pub struct SearchResult {
     pub summary: Option<String>,
     pub item_type: String,
     pub year: Option<i16>,
+    #[schema(value_type = Option<String>)]
     pub originally_available_at: Option<chrono::NaiveDate>,
     pub thumb_path: Option<String>,
     pub server_id: String,
@@ -231,12 +279,12 @@ pub struct SearchResult {
     pub rank: Option<f32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct SearchQuery {
     pub q: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ImageQuery {
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -248,13 +296,13 @@ pub struct CachedImage {
     pub content_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaVersion {
     pub video_resolution: String,
     pub subtitles: Vec<String>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerAvailability {
     pub server_id: String,
@@ -263,13 +311,14 @@ pub struct ServerAvailability {
     pub versions: Vec<MediaVersion>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaDetails {
     pub guid: String,
     pub title: String,
     pub summary: Option<String>,
     pub year: Option<i16>,
+    #[schema(value_type = Option<String>)]
     pub originally_available_at: Option<chrono::NaiveDate>,
     pub art_path: Option<String>,
     pub thumb_path: Option<String>,
@@ -279,7 +328,7 @@ pub struct MediaDetails {
     pub available_on: Vec<ServerAvailability>,
 }
 
-#[derive(Serialize, FromRow, Debug, Clone)]
+#[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SeasonSummary {
     pub id: String,
@@ -291,7 +340,7 @@ pub struct SeasonSummary {
     pub leaf_count: Option<i32>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EpisodeDetails {
     pub id: String,
@@ -320,13 +369,15 @@ impl From<DbServer> for Device {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+#[allow(dead_code)]
 pub struct PingsBody {
     pub username: String,
     pub body: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+#[allow(dead_code)]
 pub struct MediaRequest {
     pub guid: String,
     pub title: String,
@@ -335,4 +386,21 @@ pub struct MediaRequest {
     pub seasons: Option<Vec<i32>>,
     pub resolution: Option<String>,
     pub username: String,
+}
+
+/// Response from the Plex playQueues API for instant playback of media.
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayQueueResponse {
+    #[serde(rename = "playQueueID")]
+    pub play_queue_id: i64,
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<serde_json::Value>,
+}
+
+/// Container wrapper for the Plex playQueues API response.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlayQueueContainer {
+    #[serde(rename = "MediaContainer")]
+    pub media_container: PlayQueueResponse,
 }

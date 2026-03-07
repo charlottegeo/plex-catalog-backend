@@ -1,6 +1,6 @@
 use crate::models::{
     DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaVersion, Part,
-    SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
+    PlexExtra, SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -60,7 +60,7 @@ pub async fn get_all_servers(pool: &PgPool) -> Result<Vec<DbServer>, sqlx::Error
 
 pub async fn get_system_info(
     pool: &PgPool,
-    sync_interval_hours: u64,
+    sync_interval_minutes: u64,
 ) -> Result<SystemInfo, sqlx::Error> {
     use sqlx::Row;
     let row = sqlx::query(
@@ -70,7 +70,9 @@ pub async fn get_system_info(
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'movie' AND guid IS NOT NULL) AS total_movies,
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'show' AND guid IS NOT NULL) AS total_shows,
             (SELECT COUNT(*) FROM servers WHERE is_online = TRUE) AS online_servers,
-            (SELECT COUNT(*) FROM servers WHERE is_online = FALSE) AS offline_servers
+            (SELECT COUNT(*) FROM servers WHERE is_online = FALSE) AS offline_servers,
+            (SELECT last_error FROM sync_metadata WHERE id = 1) AS last_error,
+            COALESCE((SELECT sync_in_progress FROM sync_metadata WHERE id = 1), false) AS sync_in_progress
         "#,
     )
     .fetch_one(pool)
@@ -80,25 +82,54 @@ pub async fn get_system_info(
     let total_shows: i64 = row.try_get::<i64, _>("total_shows").unwrap_or(0);
     let online_servers: i64 = row.try_get::<i64, _>("online_servers").unwrap_or(0);
     let offline_servers: i64 = row.try_get::<i64, _>("offline_servers").unwrap_or(0);
+    let last_error: Option<String> = row.try_get("last_error").ok().flatten();
+    let sync_in_progress: bool = row.try_get::<bool, _>("sync_in_progress").unwrap_or(false);
     Ok(SystemInfo {
         last_updated,
-        sync_interval_hours,
+        sync_interval_minutes,
         total_movies,
         total_shows,
         online_servers,
         offline_servers,
+        last_error,
+        sync_in_progress,
     })
 }
 
 pub async fn update_sync_metadata_last_updated(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO sync_metadata (id, last_updated)
-        VALUES (1, $1)
-        ON CONFLICT (id) DO UPDATE SET last_updated = EXCLUDED.last_updated
+        INSERT INTO sync_metadata (id, last_updated, last_error, sync_in_progress)
+        VALUES (1, $1, NULL, false)
+        ON CONFLICT (id) DO UPDATE SET
+            last_updated = EXCLUDED.last_updated,
+            last_error = NULL,
+            sync_in_progress = false
         "#,
     )
     .bind(Utc::now())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Updates the sync metadata in the database with the last error and sync in progress status.
+pub async fn set_sync_metadata(
+    pool: &PgPool,
+    sync_in_progress: bool,
+    last_error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_metadata (id, sync_in_progress, last_error)
+        VALUES (1, $1, $2)
+        ON CONFLICT (id) DO UPDATE SET
+            sync_in_progress = EXCLUDED.sync_in_progress,
+            last_error = EXCLUDED.last_error
+        "#,
+    )
+    .bind(sync_in_progress)
+    .bind(last_error)
     .execute(pool)
     .await?;
     Ok(())
@@ -150,6 +181,7 @@ pub async fn get_library_items(
             i.duration,
             i.originally_available_at,
             i.studio,
+            i.extra_type,
             (SELECT mp.video_resolution
              FROM media_parts mp
              WHERE mp.item_id = i.id AND mp.server_id = i.server_id
@@ -194,6 +226,7 @@ pub async fn get_library_items(
             year: row.try_get::<i16, _>("year").unwrap_or(0) as u16,
             media,
             thumb: row.try_get("thumb_path")?,
+            extra_type: row.try_get("extra_type").ok().flatten(),
             art: row.try_get("art_path")?,
             index: row.try_get("index")?,
             leaf_count: row.try_get("leaf_count")?,
@@ -272,6 +305,7 @@ pub async fn upsert_library(
     Ok(())
 }
 
+/// Batch upserts items and their media parts.
 pub async fn upsert_items_batch(
     pool: &PgPool,
     items: &[ItemWithContext],
@@ -328,14 +362,16 @@ pub async fn upsert_items_batch(
         .map(|i| i.item.originally_available_at)
         .collect();
     let studios: Vec<Option<String>> = items.iter().map(|i| i.item.studio.clone()).collect();
+    let extra_types: Vec<Option<String>> =
+        items.iter().map(|i| i.item.extra_type.clone()).collect();
     let sync_times: Vec<DateTime<Utc>> = vec![sync_time; items.len()];
 
     let result = sqlx::query(
         r#"
-        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count, updated_at, content_rating, duration, originally_available_at, studio)
+        INSERT INTO items (id, library_id, server_id, parent_id, title, summary, item_type, year, thumb_path, art_path, last_seen, guid, index, leaf_count, updated_at, content_rating, duration, originally_available_at, studio, extra_type)
         SELECT * FROM UNNEST(
             $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::smallint[],
-            $9::text[], $10::text[], $11::timestamptz[], $12::text[], $13::integer[], $14::integer[], $15::bigint[], $16::text[], $17::bigint[], $18::date[], $19::text[]
+            $9::text[], $10::text[], $11::timestamptz[], $12::text[], $13::integer[], $14::integer[], $15::bigint[], $16::text[], $17::bigint[], $18::date[], $19::text[], $20::text[]
         )
         ON CONFLICT (id, server_id) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
@@ -351,7 +387,8 @@ pub async fn upsert_items_batch(
             content_rating = EXCLUDED.content_rating,
             duration = EXCLUDED.duration,
             originally_available_at = EXCLUDED.originally_available_at,
-            studio = EXCLUDED.studio
+            studio = EXCLUDED.studio,
+            extra_type = EXCLUDED.extra_type
         "#,
     )
     .bind(&ids[..])
@@ -373,6 +410,7 @@ pub async fn upsert_items_batch(
     .bind(&durations[..])
     .bind(&originally_available_at[..])
     .bind(&studios[..])
+    .bind(&extra_types[..])
     .execute(pool)
     .await?;
 
@@ -768,6 +806,43 @@ pub async fn get_show_seasons(
     }
 
     Ok(seasons)
+}
+
+/// Returns all extras for a parent media item from the database.
+pub async fn get_item_extras(
+    pool: &PgPool,
+    item_id: &str,
+    server_id: &str,
+) -> Result<Vec<PlexExtra>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, title,
+            '/library/metadata/' || id AS key,
+            extra_type,
+            thumb_path AS thumb
+        FROM items
+        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'extra'
+        ORDER BY title ASC
+        "#,
+    )
+    .bind(item_id)
+    .bind(server_id)
+    .fetch_all(pool)
+    .await?;
+
+    use sqlx::Row;
+    let mut extras = Vec::new();
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        extras.push(PlexExtra {
+            rating_key: Some(id),
+            title: row.try_get("title")?,
+            key: row.try_get("key")?,
+            extra_type: row.try_get("extra_type").ok().flatten(),
+            thumb: row.try_get("thumb").ok().flatten(),
+        });
+    }
+    Ok(extras)
 }
 
 pub async fn get_season_episodes(

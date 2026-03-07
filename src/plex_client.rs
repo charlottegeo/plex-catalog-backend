@@ -1,6 +1,6 @@
 use crate::models::{
     Device, ItemList, ItemMediaContainer, ItemWithDetails, LibraryList, LibraryMediaContainer,
-    LoginResponse, SingleItemMediaContainer,
+    LoginResponse, PlayQueueContainer, PlexExtrasResponse, SingleItemMediaContainer,
 };
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
@@ -165,6 +165,75 @@ impl PlexClient {
 
         let container: ItemMediaContainer = response.json().await?;
         Ok(container.media_container)
+    }
+
+    /// Checks Plex API connectivity by pinging plex.tv.
+    /// Returns Ok(()) if reachable, Err if unreachable.
+    pub async fn check_connectivity(&self) -> Result<(), reqwest::Error> {
+        let _ = self
+            .http_client
+            .get("https://plex.tv/pms/:/ip")
+            .header("X-Plex-Product", "Plex Catalog Web")
+            .header("X-Plex-Client-Identifier", &self.client_identifier)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        self.get_servers().await?;
+        Ok(())
+    }
+
+    /// Fetches bonus features (extras) for a media item from /library/metadata/{id}/extras.
+    pub async fn get_item_extras(
+        &self,
+        server_uri: &str,
+        server_token: &str,
+        rating_key: &str,
+    ) -> Result<PlexExtrasResponse, reqwest::Error> {
+        let response = self
+            .http_client
+            .get(format!(
+                "{}/library/metadata/{}/extras",
+                server_uri.trim_end_matches('/'),
+                rating_key
+            ))
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", server_token)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let container: PlexExtrasResponse = response.json().await?;
+        Ok(container)
+    }
+
+    /// Creates a play queue for instant playback. Uses a unique client_identifier to allow
+    /// multiple users on the same account to have their own queues.
+    pub async fn create_play_queue(
+        &self,
+        server_uri: &str,
+        server_token: &str,
+        item_uri: &str,
+        client_identifier: Option<&str>,
+    ) -> Result<PlayQueueContainer, reqwest::Error> {
+        let client_id = client_identifier.unwrap_or(&self.client_identifier);
+        let base = server_uri.trim_end_matches('/');
+        let url = format!("{}/playQueues", base);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", server_token)
+            .header("X-Plex-Client-Identifier", client_id)
+            .header("X-Plex-Product", "Plex Catalog Web")
+            .query(&[("uri", item_uri), ("type", "video")])
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let container: PlayQueueContainer = response.json().await?;
+        Ok(container)
     }
 
     pub async fn get_item_children(

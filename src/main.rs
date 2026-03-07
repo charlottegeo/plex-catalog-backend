@@ -1,14 +1,16 @@
 use crate::models::{CachedImage, Item};
 use crate::plex_client::PlexClient;
-use actix_web::{App, HttpServer, web};
+use actix_web::{web, App, HttpServer};
 use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
 use std::result::Result as StdResult;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 
 mod auth;
 mod db;
@@ -17,7 +19,80 @@ mod models;
 mod plex_client;
 mod routes;
 
-pub const SYNC_INTERVAL_HOURS: u64 = 3;
+/// Adds Bearer (JWT) security scheme so Swagger UI can use the Authorize button for CSH authentication.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let bearer = SecurityScheme::Http(
+            HttpBuilder::new()
+                .scheme(HttpAuthScheme::Bearer)
+                .bearer_format("JWT")
+                .description(Some(
+                    "Keycloak JWT token (CSHAuth). Use the token from your SSO login.",
+                ))
+                .build(),
+        );
+        if let Some(components) = openapi.components.as_mut() {
+            components
+                .security_schemes
+                .insert("bearer_auth".to_string(), bearer);
+        }
+        openapi.security = Some(vec![utoipa::openapi::SecurityRequirement::new(
+            "bearer_auth",
+            Vec::<String>::new(),
+        )]);
+    }
+}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        routes::get_servers_handler,
+        routes::get_system_info_handler,
+        routes::get_libraries_handler,
+        routes::get_library_items_handler,
+        routes::get_item_details_handler,
+        routes::get_item_children_handler,
+        routes::get_item_extras_handler,
+        routes::get_image_handler,
+        routes::search_handler,
+        routes::get_media_details_handler,
+        routes::get_seasons_handler,
+        routes::get_episodes_handler,
+        routes::create_play_queue_handler,
+    ),
+    components(schemas(
+        crate::models::DbServer,
+        crate::models::SystemInfo,
+        crate::models::Library,
+        crate::models::Item,
+        crate::models::ItemWithDetails,
+        crate::models::ItemList,
+        crate::models::Media,
+        crate::models::Part,
+        crate::models::Stream,
+        crate::models::PlexExtra,
+        crate::models::SearchResult,
+        crate::models::SearchQuery,
+        crate::models::ImageQuery,
+        crate::models::MediaDetails,
+        crate::models::MediaVersion,
+        crate::models::ServerAvailability,
+        crate::models::SeasonSummary,
+        crate::models::EpisodeDetails,
+        crate::models::PlayQueueResponse,
+    )),
+    modifiers(&SecurityAddon),
+    info(
+        title = "Plex Catalog Backend API",
+        version = "1.0.0",
+        description = "API for browsing Plex media catalog with sync health and extras support"
+    )
+)]
+struct ApiDoc;
+
+pub const SYNC_INTERVAL_MINUTES: u64 = 90;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const DISCOVERY_WORKER_COUNT: usize = 2;
 const DETAIL_WORKER_COUNT: usize = 2;
@@ -56,6 +131,7 @@ enum DetailTask {
     Shutdown,
 }
 
+/// Bulk inserts items into the database using PostgreSQL UNNEST for efficiency.
 async fn flush_item_buffer(
     buffer: Arc<Mutex<Vec<db::ItemWithContext>>>,
     db_pool: &sqlx::PgPool,
@@ -71,30 +147,30 @@ async fn flush_item_buffer(
 
     let count = items.len();
     let mut attempts = 0;
-    let max_attempts = 3;
+    const MAX_ATTEMPTS: u32 = 3;
 
-    while attempts < max_attempts {
+    while attempts < MAX_ATTEMPTS {
         match db::upsert_items_batch(db_pool, &items, sync_time).await {
             Ok(_) => {
                 return Ok(count);
             }
             Err(e) => {
                 attempts += 1;
-                if attempts >= max_attempts {
+                if attempts >= MAX_ATTEMPTS {
                     tracing::error!(
                         "Critical Database Error: Failed to flush batch of {} items after {} attempts: {:?}",
                         count,
-                        max_attempts,
+                        MAX_ATTEMPTS,
                         e
                     );
                     return Err(e);
                 }
 
-                let backoff = Duration::from_secs(2u64.pow(attempts as u32));
+                let backoff = Duration::from_secs(2u64.pow(attempts));
                 tracing::warn!(
                     "Database Warning: Batch upsert failed (attempt {}/{}). Retrying in {:?}... Error: {:?}",
                     attempts,
-                    max_attempts,
+                    MAX_ATTEMPTS,
                     backoff,
                     e
                 );
@@ -106,6 +182,75 @@ async fn flush_item_buffer(
     Ok(count)
 }
 
+/// Fetches extras from Plex for a parent item and upserts them into the database.
+async fn sync_extras_for_parent(
+    plex_client: &crate::plex_client::PlexClient,
+    db_pool: &sqlx::PgPool,
+    server_uri: &str,
+    server_token: &str,
+    parent_rating_key: &str,
+    library_id: &str,
+    server_id: &str,
+    sync_time: chrono::DateTime<chrono::Utc>,
+) {
+    let Ok(response) = plex_client
+        .get_item_extras(server_uri, server_token, parent_rating_key)
+        .await
+    else {
+        return;
+    };
+    let extras = response.media_container.metadata;
+    if extras.is_empty() {
+        return;
+    }
+    let items: Vec<db::ItemWithContext> = extras
+        .into_iter()
+        .enumerate()
+        .map(|(idx, e)| {
+            let rating_key = e
+                .rating_key
+                .clone()
+                .or_else(|| e.key.rsplit('/').find(|s| !s.is_empty()).map(String::from))
+                .unwrap_or_else(|| format!("extra-{}-{}-{}", server_id, parent_rating_key, idx));
+            let item = Item {
+                guid: Some(format!("local-{}-{}", server_id, rating_key)),
+                rating_key: rating_key.clone(),
+                parent_id: Some(parent_rating_key.to_string()),
+                index: None,
+                leaf_count: None,
+                title: e.title,
+                key: e.key,
+                summary: None,
+                item_type: "extra".to_string(),
+                year: 0,
+                media: vec![],
+                thumb: e.thumb.clone(),
+                art: None,
+                updated_at: None,
+                content_rating: None,
+                duration: None,
+                originally_available_at: None,
+                studio: None,
+                extra_type: e.extra_type,
+            };
+            db::ItemWithContext {
+                item,
+                library_id: library_id.to_string(),
+                server_id: server_id.to_string(),
+            }
+        })
+        .collect();
+    if let Err(e) = db::upsert_items_batch(db_pool, &items, sync_time).await {
+        tracing::warn!(
+            "Sync Warning: Failed to upsert {} extras for parent {}: {:?}",
+            items.len(),
+            parent_rating_key,
+            e
+        );
+    }
+}
+
+/// Upserts media parts and streams for an item.
 async fn process_media_parts(
     item: &Item,
     server_id: &str,
@@ -147,6 +292,8 @@ async fn process_media_parts(
     at_least_one_part_with_streams
 }
 
+/// Processes a discovery task, either syncing a single item or shutting down.
+/// This only syncs one at a time so it doesn't use excessive resources.
 async fn process_discovery_task(
     task: DiscoveryTask,
     state: &AppState,
@@ -254,6 +401,10 @@ async fn process_discovery_task(
                                 });
                             }
 
+                            let season_rating_keys: Vec<_> = seasons_to_batch
+                                .iter()
+                                .map(|ctx| ctx.item.rating_key.clone())
+                                .collect();
                             {
                                 let mut buf = item_buffer.lock().await;
                                 buf.extend(seasons_to_batch);
@@ -272,6 +423,30 @@ async fn process_discovery_task(
                                 pending_work.fetch_sub(seasons_count, Ordering::Relaxed);
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
                                 return;
+                            }
+                            sync_extras_for_parent(
+                                &state.plex_client,
+                                &state.db_pool,
+                                &server_uri,
+                                &server_token,
+                                &item.rating_key,
+                                &library_key,
+                                &server_id,
+                                sync_time,
+                            )
+                            .await;
+                            for rating_key in &season_rating_keys {
+                                sync_extras_for_parent(
+                                    &state.plex_client,
+                                    &state.db_pool,
+                                    &server_uri,
+                                    &server_token,
+                                    rating_key,
+                                    &library_key,
+                                    &server_id,
+                                    sync_time,
+                                )
+                                .await;
                             }
                             pending_work.fetch_sub(seasons_count, Ordering::Relaxed);
                             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -322,6 +497,10 @@ async fn process_discovery_task(
                         }
 
                         if !episodes_to_batch.is_empty() {
+                            let episode_rating_keys: Vec<_> = episodes_to_batch
+                                .iter()
+                                .map(|ep| ep.item.rating_key.clone())
+                                .collect();
                             {
                                 let mut buf = item_buffer.lock().await;
                                 buf.extend(episodes_to_batch);
@@ -340,6 +519,19 @@ async fn process_discovery_task(
                                 pending_work.fetch_sub(episodes_count, Ordering::Relaxed);
                             } else {
                                 pending_work.fetch_sub(episodes_count, Ordering::Relaxed);
+                                for rating_key in &episode_rating_keys {
+                                    sync_extras_for_parent(
+                                        &state.plex_client,
+                                        &state.db_pool,
+                                        &server_uri,
+                                        &server_token,
+                                        rating_key,
+                                        &library_key,
+                                        &server_id,
+                                        sync_time,
+                                    )
+                                    .await;
+                                }
                             }
                         }
 
@@ -373,6 +565,17 @@ async fn process_discovery_task(
                     drop(_permit);
                 }
                 "movie" | "episode" => {
+                    sync_extras_for_parent(
+                        &state.plex_client,
+                        &state.db_pool,
+                        &server_uri,
+                        &server_token,
+                        &item.rating_key,
+                        &library_key,
+                        &server_id,
+                        sync_time,
+                    )
+                    .await;
                     if !item.media.is_empty() {
                         let streams_processed =
                             process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
@@ -842,8 +1045,14 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     tracing::info!("Initiating database sync run at {}", sync_start_time);
 
+    if let Err(e) = db::set_sync_metadata(&db_pool, true, None).await {
+        tracing::error!("Database Error: Failed to set sync_in_progress: {:?}", e);
+    }
+
     if let Err(e) = client.ensure_logged_in().await {
         tracing::error!("Auth Error: Failed Plex login. Sync aborted: {:?}", e);
+        let _ = db::set_sync_metadata(&db_pool, false, Some(&format!("Plex login failed: {}", e)))
+            .await;
         return;
     }
 
@@ -862,9 +1071,39 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
             .await;
     } else {
         tracing::error!("Network Error: Failed to retrieve server list from Plex API");
+        let _ = db::set_sync_metadata(
+            &db_pool,
+            false,
+            Some("Failed to retrieve server list from Plex API"),
+        )
+        .await;
+        return;
     }
 
-    tracing::info!("Sync complete. Pruning orphaned data...");
+    // Checks if Plex API is reachable before pruning so it doesn't empty the database if
+    // the Plex API is unreachable during a sync.
+    tracing::info!("Sync complete. Verifying Plex API connectivity before pruning...");
+    if let Err(e) = client.check_connectivity().await {
+        tracing::error!(
+            "Connectivity Check Failed: Plex API unreachable before prune. Aborting prune to avoid data loss. Error: {:?}",
+            e
+        );
+        if let Err(db_err) = db::set_sync_metadata(
+            &db_pool,
+            false,
+            Some("Plex API Unreachable - prune aborted to preserve local data"),
+        )
+        .await
+        {
+            tracing::error!(
+                "Database Error: Failed to update sync_metadata: {:?}",
+                db_err
+            );
+        }
+        return;
+    }
+
+    tracing::info!("Connectivity verified. Pruning orphaned data...");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
     }
@@ -885,12 +1124,12 @@ async fn database_sync_scheduler(app_state: web::Data<AppState>) {
     tracing::info!("Service started. Performing initial database sync...");
     run_database_sync(&app_state).await;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(60 * 60 * SYNC_INTERVAL_HOURS));
+    let mut interval = tokio::time::interval(Duration::from_secs(60 * SYNC_INTERVAL_MINUTES));
 
     interval.tick().await;
 
     loop {
-        tracing::info!("Next scheduled sync in {} hours.", SYNC_INTERVAL_HOURS);
+        tracing::info!("Next scheduled sync in {} minutes.", SYNC_INTERVAL_MINUTES);
         interval.tick().await;
         run_database_sync(&app_state).await;
     }
@@ -933,6 +1172,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(app_state.clone())
             .configure(routes::configure)
+            .service(
+                utoipa_swagger_ui::SwaggerUi::new("/swagger-ui/{_:.*}")
+                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
+            )
     })
     .workers(2)
     .bind(("0.0.0.0", 3001))?
