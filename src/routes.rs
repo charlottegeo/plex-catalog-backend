@@ -179,11 +179,7 @@ async fn get_item_extras_handler(
         let server = get_server_details_or_404(&state.db_pool, &server_id).await?;
         let response = state
             .plex_client
-            .get_item_extras(
-                &server.connection_uri,
-                &server.access_token,
-                &rating_key,
-            )
+            .get_item_extras(&server.connection_uri, &server.access_token, &rating_key)
             .await?;
         extras = response.media_container.metadata;
     }

@@ -11,7 +11,7 @@ SET row_security = off;
 SET default_tablespace = '';
 SET default_table_access_method = heap;
 
-CREATE FUNCTION public.items_fts_trigger() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.items_fts_trigger() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -47,8 +47,8 @@ ALTER TABLE ONLY public.libraries
 ALTER TABLE ONLY public.libraries
     ADD CONSTRAINT libraries_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.servers(id) ON DELETE CASCADE;
 
-CREATE INDEX idx_libraries_last_seen ON public.libraries USING btree (last_seen);
-CREATE INDEX idx_libraries_server_id ON public.libraries USING btree (server_id);
+CREATE INDEX IF NOT EXISTS idx_libraries_last_seen ON public.libraries USING btree (last_seen);
+CREATE INDEX IF NOT EXISTS idx_libraries_server_id ON public.libraries USING btree (server_id);
 
 CREATE TABLE public.items (
     id text NOT NULL,
@@ -83,16 +83,17 @@ ALTER TABLE ONLY public.items
 ALTER TABLE ONLY public.items
     ADD CONSTRAINT items_parent_id_fkey FOREIGN KEY (parent_id, server_id) REFERENCES public.items(id, server_id) ON DELETE CASCADE;
 
-CREATE INDEX idx_items_guid ON public.items USING btree (guid);
-CREATE INDEX idx_items_hierarchy_lookup ON public.items USING btree (parent_id, server_id);
-CREATE INDEX idx_items_index ON public.items USING btree (index);
-CREATE INDEX idx_items_last_seen ON public.items USING btree (last_seen);
-CREATE INDEX idx_items_library_id ON public.items USING btree (library_id);
-CREATE INDEX idx_items_originally_available_at ON public.items USING btree (originally_available_at);
-CREATE INDEX idx_items_parent_id ON public.items USING btree (parent_id);
-CREATE INDEX idx_items_type_parent ON public.items USING btree (item_type, parent_id);
-CREATE INDEX items_fts_document_idx ON public.items USING gin (fts_document);
+CREATE INDEX IF NOT EXISTS idx_items_guid ON public.items USING btree (guid);
+CREATE INDEX IF NOT EXISTS idx_items_hierarchy_lookup ON public.items USING btree (parent_id, server_id);
+CREATE INDEX IF NOT EXISTS idx_items_index ON public.items USING btree (index);
+CREATE INDEX IF NOT EXISTS idx_items_last_seen ON public.items USING btree (last_seen);
+CREATE INDEX IF NOT EXISTS idx_items_library_id ON public.items USING btree (library_id);
+CREATE INDEX IF NOT EXISTS idx_items_originally_available_at ON public.items USING btree (originally_available_at);
+CREATE INDEX IF NOT EXISTS idx_items_parent_id ON public.items USING btree (parent_id);
+CREATE INDEX IF NOT EXISTS idx_items_type_parent ON public.items USING btree (item_type, parent_id);
+CREATE INDEX IF NOT EXISTS items_fts_document_idx ON public.items USING gin (fts_document);
 
+DROP TRIGGER IF EXISTS items_fts_update ON public.items;
 CREATE TRIGGER items_fts_update BEFORE INSERT OR UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_fts_trigger();
 CREATE TABLE public.media_parts (
     id bigint NOT NULL,
@@ -110,9 +111,9 @@ ALTER TABLE ONLY public.media_parts
 ALTER TABLE ONLY public.media_parts
     ADD CONSTRAINT media_parts_item_id_fkey FOREIGN KEY (item_id, server_id) REFERENCES public.items(id, server_id) ON DELETE CASCADE;
 
-CREATE INDEX idx_media_parts_item_id ON public.media_parts USING btree (item_id);
-CREATE INDEX idx_media_parts_item_server ON public.media_parts USING btree (item_id, server_id);
-CREATE INDEX idx_media_parts_last_seen ON public.media_parts USING btree (last_seen);
+CREATE INDEX IF NOT EXISTS idx_media_parts_item_id ON public.media_parts USING btree (item_id);
+CREATE INDEX IF NOT EXISTS idx_media_parts_item_server ON public.media_parts USING btree (item_id, server_id);
+CREATE INDEX IF NOT EXISTS idx_media_parts_last_seen ON public.media_parts USING btree (last_seen);
 
 CREATE TABLE public.streams (
     id bigint NOT NULL,
@@ -132,9 +133,9 @@ ALTER TABLE ONLY public.streams
 ALTER TABLE ONLY public.streams
     ADD CONSTRAINT streams_media_part_id_fkey FOREIGN KEY (media_part_id, server_id) REFERENCES public.media_parts(id, server_id) ON DELETE CASCADE;
 
-CREATE INDEX idx_streams_last_seen ON public.streams USING btree (last_seen);
-CREATE INDEX idx_streams_media_part_id ON public.streams USING btree (media_part_id);
-CREATE INDEX idx_streams_part_server ON public.streams USING btree (media_part_id, server_id);
+CREATE INDEX IF NOT EXISTS idx_streams_last_seen ON public.streams USING btree (last_seen);
+CREATE INDEX IF NOT EXISTS idx_streams_media_part_id ON public.streams USING btree (media_part_id);
+CREATE INDEX IF NOT EXISTS idx_streams_part_server ON public.streams USING btree (media_part_id, server_id);
 
 CREATE TABLE public.sync_metadata (
     id integer DEFAULT 1 NOT NULL,
