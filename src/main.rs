@@ -1153,6 +1153,12 @@ async fn main() -> std::io::Result<()> {
 
     tracing::info!("Postgres connected.");
 
+    sqlx::migrate!("./migrations")
+        .run(&db_pool)
+        .await
+        .expect("Migration failed");
+    tracing::info!("Database schema is up to date.");
+
     let app_state = web::Data::new(AppState {
         plex_client: PlexClient::new(),
         db_pool: db_pool.clone(),
