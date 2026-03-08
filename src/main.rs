@@ -57,6 +57,8 @@ impl Modify for SecurityAddon {
         routes::get_item_extras_handler,
         routes::get_image_handler,
         routes::search_handler,
+        routes::discover_handler,
+        routes::create_request_handler,
         routes::get_media_details_handler,
         routes::get_seasons_handler,
         routes::get_episodes_handler,
@@ -75,6 +77,8 @@ impl Modify for SecurityAddon {
         crate::models::PlexExtra,
         crate::models::SearchResult,
         crate::models::SearchQuery,
+        crate::models::MediaRequestPayload,
+        crate::models::MediaRequest,
         crate::models::ImageQuery,
         crate::models::MediaDetails,
         crate::models::MediaVersion,
@@ -1139,6 +1143,57 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     tracing::info!("Connectivity verified. Pruning orphaned data...");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
+    }
+
+    if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
+        if deleted > 0 {
+            tracing::info!("Deleted {} stale media requests (pending > 30 days)", deleted);
+        }
+    } else {
+        tracing::warn!("Failed to delete stale media requests");
+    }
+
+    if let Ok(pending) = db::get_pending_requests(&db_pool).await {
+        for req in pending {
+            let fulfilled = match req.item_type.as_str() {
+                "movie" => {
+                    db::is_movie_request_fulfilled(
+                        &db_pool,
+                        &req.guid,
+                        req.requested_resolution.as_deref(),
+                        req.is_upgrade,
+                    )
+                    .await
+                }
+                "show" => {
+                    db::is_show_request_fulfilled(
+                        &db_pool,
+                        &req.guid,
+                        req.requested_seasons.as_deref(),
+                        req.requested_resolution.as_deref(),
+                        req.is_upgrade,
+                    )
+                    .await
+                }
+                _ => Ok(false),
+            };
+
+            if let Ok(true) = fulfilled {
+                if let Err(e) = db::mark_request_fulfilled(&db_pool, req.id).await {
+                    tracing::warn!("Failed to mark request {} as fulfilled: {:?}", req.id, e);
+                } else {
+                    tracing::info!(
+                        "Media request fulfilled: {} (id={}) for user {}",
+                        req.title,
+                        req.id,
+                        req.username
+                    );
+                    // TODO: send ping to user
+                }
+            }
+        }
+    } else {
+        tracing::warn!("Failed to fetch pending media requests");
     }
 
     if let Err(e) = db::update_sync_metadata_last_updated(&db_pool).await {

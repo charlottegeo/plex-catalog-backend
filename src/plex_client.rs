@@ -297,6 +297,31 @@ impl PlexClient {
         Ok(container.media_container)
     }
 
+    /// Searches Plex's global catalog/discover for movies and TV shows.
+    /// Uses metadata.provider.plex.tv/library/search.
+    pub async fn search_global_discover(
+        &self,
+        access_token: &str,
+        query: &str,
+    ) -> Result<serde_json::Value, reqwest::Error> {
+        let response = self
+            .http_client
+            .get("https://metadata.provider.plex.tv/library/search")
+            .query(&[
+                ("query", query),
+                ("searchTypes", "movies,tv"),
+                ("includeMetadata", "1"),
+            ])
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", access_token)
+            .header("X-Plex-Client-Identifier", &self.client_identifier)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        response.json().await
+    }
+
     pub async fn get_image(
         &self,
         server_uri: &str,

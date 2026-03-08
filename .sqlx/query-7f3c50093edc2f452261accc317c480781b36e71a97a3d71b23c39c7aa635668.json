@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                        SELECT EXISTS(\n                            SELECT 1 FROM items show\n                            JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id AND ep.item_type = 'episode'\n                            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id\n                            WHERE show.guid = $1 AND show.item_type = 'show'\n                            AND mp.video_resolution ILIKE $2\n                        ) AS \"exists!\"\n                        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7f3c50093edc2f452261accc317c480781b36e71a97a3d71b23c39c7aa635668"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT EXISTS(\n                        SELECT 1 FROM items show\n                        JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id\n                            AND ep.item_type = 'episode'\n                        WHERE show.guid = $1 AND show.item_type = 'show'\n                        AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')\n                    ) AS \"exists!\"\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "be46256d9b2fa86e51b75a9272ff03f3a316b653d6a526e91434915c613468f6"
+}

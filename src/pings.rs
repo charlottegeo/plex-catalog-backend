@@ -2,6 +2,7 @@ use std::env;
 use crate::models::PingsBody;
 use anyhow::{Result, anyhow};
 use reqwest::Client;
+use serde_json::json;
 
 pub async fn send_ping(username: String, body: String) -> Result<()> {
     let secret = env::var("PINGS_SECRET")?;

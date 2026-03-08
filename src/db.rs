@@ -1,6 +1,7 @@
 use crate::models::{
-    DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaVersion, Part,
-    PlexExtra, SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
+    DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaRequest,
+    MediaVersion, Part, PlexExtra, SearchResult, SeasonSummary, ServerAvailability, Stream,
+    SystemInfo,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -891,4 +892,367 @@ pub async fn get_season_episodes(
     sorted_episodes.sort_by_key(|e| e.index.unwrap_or(0));
 
     Ok(sorted_episodes)
+}
+
+/// Check if an item exists in the catalog using its guid.
+pub async fn item_exists_by_guid(pool: &PgPool, guid: &str) -> Result<bool, sqlx::Error> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1) AS "exists!""#,
+        guid
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(exists)
+}
+
+/// Insert a new media request. Either adds a new request or updates an existing one.
+/// On conflict with (username, guid) where status='pending', merges seasons and updates resolution, is_upgrade.
+pub async fn create_or_update_request(
+    pool: &PgPool,
+    username: &str,
+    payload: &crate::models::MediaRequestPayload,
+    is_upgrade: bool,
+) -> Result<MediaRequest, sqlx::Error> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+        ON CONFLICT (username, guid) WHERE (status = 'pending')
+        DO UPDATE SET
+            title = EXCLUDED.title,
+            requested_seasons = (
+                SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), '{}')
+                FROM unnest(
+                    COALESCE(media_requests.requested_seasons, '{}') || COALESCE(EXCLUDED.requested_seasons, '{}')
+                ) AS x
+            ),
+            requested_resolution = COALESCE(EXCLUDED.requested_resolution, media_requests.requested_resolution),
+            is_upgrade = EXCLUDED.is_upgrade,
+            updated_at = NOW()
+        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, created_at, updated_at
+        "#,
+    )
+    .bind(username)
+    .bind(&payload.guid)
+    .bind(&payload.title)
+    .bind(&payload.item_type)
+    .bind(&payload.requested_seasons)
+    .bind(&payload.requested_resolution)
+    .bind(is_upgrade)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(MediaRequest {
+        id: row.try_get("id")?,
+        username: row.try_get("username")?,
+        guid: row.try_get("guid")?,
+        title: row.try_get("title")?,
+        item_type: row.try_get("item_type")?,
+        requested_seasons: row.try_get("requested_seasons")?,
+        requested_resolution: row.try_get("requested_resolution")?,
+        is_upgrade: row.try_get("is_upgrade")?,
+        status: row.try_get("status")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+/// Fetch all pending media requests.
+pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::Error> {
+    sqlx::query_as!(
+        MediaRequest,
+        r#"
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, status, created_at, updated_at
+        FROM media_requests
+        WHERE status = 'pending'
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Mark a media request as fulfilled.
+pub async fn mark_request_fulfilled(pool: &PgPool, id: i32) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE media_requests SET status = 'fulfilled', updated_at = NOW() WHERE id = $1",
+        id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Delete stale pending requests older than 30 days.
+pub async fn delete_stale_requests(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+        "DELETE FROM media_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '30 days'"
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Strips the plex:// prefix from the guid to match against items table.
+fn guid_for_item_lookup(guid: &str) -> &str {
+    guid.strip_prefix("plex://").unwrap_or(guid)
+}
+
+/// Check if a movie request is fulfilled in the local items table.
+/// If is_upgrade = false (new media): fulfill as soon as any resolution exists.
+/// If is_upgrade = true (upgrade existing): only fulfill when requested_resolution matches.
+pub async fn is_movie_request_fulfilled(
+    pool: &PgPool,
+    guid: &str,
+    requested_resolution: Option<&str>,
+    is_upgrade: bool,
+) -> Result<bool, sqlx::Error> {
+    let normalized_guid = guid_for_item_lookup(guid);
+
+    if !is_upgrade {
+        let exists = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'movie') AS "exists!""#,
+            normalized_guid
+        )
+        .fetch_one(pool)
+        .await?;
+        return Ok(exists);
+    }
+
+    if requested_resolution.is_none() {
+        let exists = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'movie') AS "exists!""#,
+            normalized_guid
+        )
+        .fetch_one(pool)
+        .await?;
+        return Ok(exists);
+    }
+
+    let resolution_pattern = match requested_resolution.unwrap().to_lowercase().as_str() {
+        "4k" | "2160p" => "%4k%",
+        "1080p" | "1080" => "%1080%",
+        "720p" | "720" => "%720%",
+        r => {
+            return Ok(sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM items i
+                    JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
+                    WHERE i.guid = $1 AND i.item_type = 'movie'
+                    AND mp.video_resolution ILIKE $2
+                ) AS "exists!"
+                "#,
+                normalized_guid,
+                format!("%{}%", r)
+            )
+            .fetch_one(pool)
+            .await?);
+        }
+    };
+
+    let exists = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM items i
+            JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
+            WHERE i.guid = $1 AND i.item_type = 'movie'
+            AND (mp.video_resolution ILIKE $2 OR mp.video_resolution ILIKE '%2160%')
+        ) AS "exists!"
+        "#,
+        normalized_guid,
+        resolution_pattern
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists)
+}
+
+/// Check if a TV show request is fulfilled: show exists, requested seasons exist, and resolution if specified.
+/// If is_upgrade = false (new media): verify show + seasons exist, IGNORE resolution.
+/// If is_upgrade = true (upgrade existing): check resolution on episodes.
+pub async fn is_show_request_fulfilled(
+    pool: &PgPool,
+    guid: &str,
+    requested_seasons: Option<&[i32]>,
+    requested_resolution: Option<&str>,
+    is_upgrade: bool,
+) -> Result<bool, sqlx::Error> {
+    let normalized_guid = guid_for_item_lookup(guid);
+    let show_exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'show') AS "exists!""#,
+        normalized_guid
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !show_exists {
+        return Ok(false);
+    }
+
+    if !is_upgrade {
+        let seasons = match requested_seasons {
+            Some(s) if !s.is_empty() => s,
+            _ => return Ok(true),
+        };
+        for &season_num in seasons.iter() {
+            let season_exists = sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM items show
+                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+                        AND season.item_type = 'season' AND season.index = $2
+                    WHERE show.guid = $1 AND show.item_type = 'show'
+                ) AS "exists!"
+                "#,
+                normalized_guid,
+                season_num
+            )
+            .fetch_one(pool)
+            .await?;
+            if !season_exists {
+                let direct_episodes = sqlx::query_scalar!(
+                    r#"
+                    SELECT EXISTS(
+                        SELECT 1 FROM items show
+                        JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
+                            AND ep.item_type = 'episode'
+                        WHERE show.guid = $1 AND show.item_type = 'show'
+                        AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
+                    ) AS "exists!"
+                    "#,
+                    normalized_guid
+                )
+                .fetch_one(pool)
+                .await?;
+                if !(direct_episodes && season_num == 1) {
+                    return Ok(false);
+                }
+            }
+        }
+        return Ok(true);
+    }
+
+    // Check resolution on episodes
+    let seasons = match requested_seasons {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return if requested_resolution.is_some() {
+                let resolution_pattern = resolution_pattern_for(requested_resolution.unwrap());
+                let exists = sqlx::query_scalar!(
+                    r#"
+                    SELECT EXISTS(
+                        SELECT 1 FROM items show
+                        JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
+                        AND (ep.parent_id = show.id OR EXISTS (SELECT 1 FROM items s WHERE s.id = ep.parent_id AND s.parent_id = show.id AND s.server_id = show.server_id AND s.item_type = 'season'))
+                        JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+                        WHERE show.guid = $1 AND show.item_type = 'show'
+                        AND mp.video_resolution ILIKE $2
+                    ) AS "exists!"
+                    "#,
+                    normalized_guid,
+                    resolution_pattern
+                )
+                .fetch_one(pool)
+                .await?;
+                Ok(exists)
+            } else {
+                Ok(true)
+            };
+        }
+    };
+    for &season_num in seasons.iter() {
+        let season_exists = if let Some(res) = requested_resolution {
+            let resolution_pattern = resolution_pattern_for(res);
+            sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM items show
+                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+                        AND season.item_type = 'season' AND season.index = $2
+                    JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id AND ep.item_type = 'episode'
+                    JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+                    WHERE show.guid = $1 AND show.item_type = 'show'
+                    AND mp.video_resolution ILIKE $3
+                ) AS "exists!"
+                "#,
+                normalized_guid,
+                season_num,
+                resolution_pattern
+            )
+            .fetch_one(pool)
+            .await?
+        } else {
+            sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM items show
+                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+                        AND season.item_type = 'season' AND season.index = $2
+                    WHERE show.guid = $1 AND show.item_type = 'show'
+                ) AS "exists!"
+                "#,
+                normalized_guid,
+                season_num
+            )
+            .fetch_one(pool)
+            .await?
+        };
+
+        if !season_exists {
+            let direct_episodes = sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM items show
+                    JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
+                        AND ep.item_type = 'episode'
+                    WHERE show.guid = $1 AND show.item_type = 'show'
+                    AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
+                ) AS "exists!"
+                "#,
+                normalized_guid
+            )
+            .fetch_one(pool)
+            .await?;
+
+            if direct_episodes && season_num == 1 {
+                if requested_resolution.is_some() {
+                    let resolution_pattern = resolution_pattern_for(requested_resolution.unwrap());
+                    let has_res = sqlx::query_scalar!(
+                        r#"
+                        SELECT EXISTS(
+                            SELECT 1 FROM items show
+                            JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id AND ep.item_type = 'episode'
+                            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+                            WHERE show.guid = $1 AND show.item_type = 'show'
+                            AND mp.video_resolution ILIKE $2
+                        ) AS "exists!"
+                        "#,
+                        normalized_guid,
+                        resolution_pattern
+                    )
+                    .fetch_one(pool)
+                    .await?;
+                    if !has_res {
+                        return Ok(false);
+                    }
+                }
+            } else if !direct_episodes || season_num != 1 {
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn resolution_pattern_for(res: &str) -> &'static str {
+    match res.to_lowercase().as_str() {
+        "4k" | "2160p" => "%4k%",
+        "1080p" | "1080" => "%1080%",
+        "720p" | "720" => "%720%",
+        _ => "%",
+    }
 }

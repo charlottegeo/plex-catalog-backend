@@ -364,16 +364,34 @@ pub struct PingsBody {
     pub body: String,
 }
 
+/// Payload for creating/updating a media request.
 #[derive(Serialize, Deserialize, Debug, ToSchema)]
-#[allow(dead_code)]
-pub struct MediaRequest {
+#[serde(rename_all = "camelCase")]
+pub struct MediaRequestPayload {
     pub guid: String,
     pub title: String,
     pub item_type: String,
-    pub year: Option<i16>,
-    pub seasons: Option<Vec<i32>>,
-    pub resolution: Option<String>,
+    pub requested_seasons: Option<Vec<i32>>,
+    pub requested_resolution: Option<String>,
+}
+
+/// Media request from the database.
+#[derive(Serialize, Deserialize, Debug, Clone, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRequest {
+    pub id: i32,
     pub username: String,
+    pub guid: String,
+    pub title: String,
+    pub item_type: String,
+    pub requested_seasons: Option<Vec<i32>>,
+    pub requested_resolution: Option<String>,
+    pub is_upgrade: bool,
+    pub status: String,
+    #[schema(value_type = String)]
+    pub created_at: DateTime<Utc>,
+    #[schema(value_type = String)]
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Response from the Plex playQueues API for instant playback of media.

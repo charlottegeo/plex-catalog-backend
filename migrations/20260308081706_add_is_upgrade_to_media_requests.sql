@@ -1,0 +1,1 @@
+ALTER TABLE media_requests ADD COLUMN is_upgrade BOOLEAN NOT NULL DEFAULT FALSE;

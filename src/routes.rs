@@ -1,15 +1,15 @@
-use crate::auth::CSHAuth;
+use crate::auth::{CSHAuth, User};
 use crate::{
     db,
     error::ApiError,
     models::{
         DbServer, EpisodeDetails, ImageQuery, Item, ItemList, ItemWithDetails, Library,
-        MediaDetails, PlayQueueResponse, PlexExtra, SearchQuery, SearchResult, SeasonSummary,
-        SystemInfo,
+        MediaDetails, MediaRequestPayload, PlayQueueResponse, PlexExtra, SearchQuery, SearchResult,
+        SeasonSummary, SystemInfo,
     },
     AppState, SYNC_INTERVAL_MINUTES,
 };
-use actix_web::{get, http::header, post, web, HttpResponse, Responder, Result};
+use actix_web::{get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result};
 
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
@@ -33,6 +33,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_item_extras_handler)
             .service(get_image_handler)
             .service(search_handler)
+            .service(discover_handler)
+            .service(create_request_handler)
             .service(get_media_details_handler)
             .service(get_seasons_handler)
             .service(get_episodes_handler)
@@ -293,6 +295,64 @@ async fn get_image_handler(
             3600u32,
         )]))
         .body(image_bytes))
+}
+
+/// Search Plex's global discover catalog for movies and TV shows.
+///
+/// Uses an active server's access token to query metadata.provider.plex.tv.
+#[utoipa::path(
+    get,
+    path = "/api/discover",
+    params(("q" = String, Query, description = "Search query")),
+    responses((status = 200, description = "Search results from Plex discover", body = serde_json::Value))
+)]
+#[get("/discover")]
+async fn discover_handler(
+    state: web::Data<AppState>,
+    query: web::Query<SearchQuery>,
+) -> Result<impl Responder, ApiError> {
+    let servers = db::get_all_servers(&state.db_pool).await?;
+    let token = servers
+        .into_iter()
+        .find(|s| s.is_online && !s.access_token.is_empty())
+        .map(|s| s.access_token)
+        .ok_or_else(|| ApiError::NotFound("No online server with access token available".to_string()))?;
+
+    let results = state
+        .plex_client
+        .search_global_discover(&token, &query.q)
+        .await?;
+
+    Ok(HttpResponse::Ok().json(results))
+}
+
+/// Create or update a media request.
+///
+/// On conflict with an existing pending request for the same (username, guid), merges seasons and updates resolution.
+#[utoipa::path(
+    post,
+    path = "/api/requests",
+    request_body = MediaRequestPayload,
+    responses((status = 200, description = "Created or updated request", body = crate::models::MediaRequest))
+)]
+#[post("/requests")]
+async fn create_request_handler(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    payload: web::Json<MediaRequestPayload>,
+) -> Result<impl Responder, ApiError> {
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    let payload = payload.into_inner();
+    let guid_for_check = payload.guid.strip_prefix("plex://").unwrap_or(&payload.guid);
+    let is_upgrade = db::item_exists_by_guid(&state.db_pool, guid_for_check).await?;
+    let request = db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade)
+        .await?;
+
+    Ok(HttpResponse::Ok().json(request))
 }
 
 /// Full-text search over the catalog.
