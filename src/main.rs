@@ -1147,7 +1147,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
         if deleted > 0 {
-            tracing::info!("Deleted {} stale media requests (pending > 30 days)", deleted);
+            tracing::info!(
+                "Deleted {} stale media requests (pending > 30 days)",
+                deleted
+            );
         }
     } else {
         tracing::warn!("Failed to delete stale media requests");

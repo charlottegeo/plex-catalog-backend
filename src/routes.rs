@@ -4,12 +4,14 @@ use crate::{
     error::ApiError,
     models::{
         DbServer, EpisodeDetails, ImageQuery, Item, ItemList, ItemWithDetails, Library,
-        MediaDetails, MediaRequestPayload, PlayQueueResponse, PlexExtra, SearchQuery, SearchResult,
+        MediaDetails, MediaRequest, MediaRequestPayload, PlayQueueResponse, SearchQuery, SearchResult,
         SeasonSummary, SystemInfo,
     },
     AppState, SYNC_INTERVAL_MINUTES,
 };
-use actix_web::{get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result};
+use actix_web::{
+    get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result,
+};
 
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
@@ -316,7 +318,9 @@ async fn discover_handler(
         .into_iter()
         .find(|s| s.is_online && !s.access_token.is_empty())
         .map(|s| s.access_token)
-        .ok_or_else(|| ApiError::NotFound("No online server with access token available".to_string()))?;
+        .ok_or_else(|| {
+            ApiError::NotFound("No online server with access token available".to_string())
+        })?;
 
     let results = state
         .plex_client
@@ -333,7 +337,7 @@ async fn discover_handler(
     post,
     path = "/api/requests",
     request_body = MediaRequestPayload,
-    responses((status = 200, description = "Created or updated request", body = crate::models::MediaRequest))
+    responses((status = 200, description = "Created or updated request", body = MediaRequest))
 )]
 #[post("/requests")]
 async fn create_request_handler(
@@ -347,10 +351,13 @@ async fn create_request_handler(
         .map(|u| u.preferred_username.clone())
         .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
     let payload = payload.into_inner();
-    let guid_for_check = payload.guid.strip_prefix("plex://").unwrap_or(&payload.guid);
+    let guid_for_check = payload
+        .guid
+        .strip_prefix("plex://")
+        .unwrap_or(&payload.guid);
     let is_upgrade = db::item_exists_by_guid(&state.db_pool, guid_for_check).await?;
-    let request = db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade)
-        .await?;
+    let request =
+        db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
 
     Ok(HttpResponse::Ok().json(request))
 }
