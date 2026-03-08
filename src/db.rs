@@ -811,43 +811,6 @@ pub async fn get_show_seasons(
     Ok(seasons)
 }
 
-/// Returns all extras for a parent media item from the database.
-pub async fn get_item_extras(
-    pool: &PgPool,
-    item_id: &str,
-    server_id: &str,
-) -> Result<Vec<PlexExtra>, sqlx::Error> {
-    let rows = sqlx::query(
-        r#"
-        SELECT id, title,
-            '/library/metadata/' || id AS key,
-            extra_type,
-            thumb_path AS thumb
-        FROM items
-        WHERE parent_id = $1 AND server_id = $2 AND item_type = 'extra'
-        ORDER BY title ASC
-        "#,
-    )
-    .bind(item_id)
-    .bind(server_id)
-    .fetch_all(pool)
-    .await?;
-
-    use sqlx::Row;
-    let mut extras = Vec::new();
-    for row in rows {
-        let id: String = row.try_get("id")?;
-        extras.push(PlexExtra {
-            rating_key: Some(id),
-            title: row.try_get("title")?,
-            key: row.try_get("key")?,
-            extra_type: row.try_get("extra_type").ok().flatten(),
-            thumb: row.try_get("thumb").ok().flatten(),
-        });
-    }
-    Ok(extras)
-}
-
 pub async fn get_season_episodes(
     pool: &PgPool,
     season_id: &str,

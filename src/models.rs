@@ -141,20 +141,6 @@ pub struct PlexExtra {
     pub thumb: Option<String>,
 }
 
-/// Container for extras returned by the database.
-#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
-pub struct PlexExtrasContainer {
-    #[serde(rename = "Metadata", alias = "Directory", default)]
-    pub metadata: Vec<PlexExtra>,
-}
-
-/// Response wrapper for Plex extras from the Plex API.
-#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
-pub struct PlexExtrasResponse {
-    #[serde(rename = "MediaContainer")]
-    pub media_container: PlexExtrasContainer,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct SingleItemMediaContainer {
     #[serde(rename = "MediaContainer")]

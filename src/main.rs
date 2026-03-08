@@ -194,13 +194,12 @@ async fn sync_extras_for_parent(
     server_id: &str,
     sync_time: chrono::DateTime<chrono::Utc>,
 ) {
-    let Ok(response) = plex_client
+    let Ok(extras) = plex_client
         .get_item_extras(server_uri, server_token, parent_rating_key)
         .await
     else {
         return;
     };
-    let extras = response.media_container.metadata;
     if extras.is_empty() {
         return;
     }

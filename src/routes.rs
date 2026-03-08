@@ -174,15 +174,11 @@ async fn get_item_extras_handler(
     path: web::Path<(String, String)>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let mut extras = db::get_item_extras(&state.db_pool, &rating_key, &server_id).await?;
-    if extras.is_empty() {
-        let server = get_server_details_or_404(&state.db_pool, &server_id).await?;
-        let response = state
-            .plex_client
-            .get_item_extras(&server.connection_uri, &server.access_token, &rating_key)
-            .await?;
-        extras = response.media_container.metadata;
-    }
+    let server = get_server_details_or_404(&state.db_pool, &server_id).await?;
+    let extras = state
+        .plex_client
+        .get_item_extras(&server.connection_uri, &server.access_token, &rating_key)
+        .await?;
     Ok(HttpResponse::Ok().json(extras))
 }
 

@@ -1,6 +1,6 @@
 use crate::models::{
     Device, ItemList, ItemMediaContainer, ItemWithDetails, LibraryList, LibraryMediaContainer,
-    LoginResponse, PlayQueueContainer, PlexExtrasResponse, SingleItemMediaContainer,
+    LoginResponse, PlayQueueContainer, PlexExtra, SingleItemMediaContainer,
 };
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
@@ -183,28 +183,67 @@ impl PlexClient {
         Ok(())
     }
 
-    /// Fetches bonus features (extras) for a media item from /library/metadata/{id}/extras.
+    /// Fetches extras for a media item (movie, show, season, episode) from the metadata endpoint with includeExtras=1.
+    /// Extras are embedded in MediaContainer.Metadata[0].Extras.Metadata
     pub async fn get_item_extras(
         &self,
         server_uri: &str,
         server_token: &str,
         rating_key: &str,
-    ) -> Result<PlexExtrasResponse, reqwest::Error> {
+    ) -> Result<Vec<PlexExtra>, reqwest::Error> {
         let response = self
             .http_client
             .get(format!(
-                "{}/library/metadata/{}/extras",
+                "{}/library/metadata/{}?includeExtras=1",
                 server_uri.trim_end_matches('/'),
                 rating_key
             ))
             .header("Accept", "application/json")
             .header("X-Plex-Token", server_token)
+            .header("X-Plex-Client-Identifier", &self.client_identifier)
             .send()
             .await?
             .error_for_status()?;
 
-        let container: PlexExtrasResponse = response.json().await?;
-        Ok(container)
+        let value: serde_json::Value = response.json().await?;
+        let extras = value
+            .get("MediaContainer")
+            .and_then(|mc| mc.get("Metadata"))
+            .and_then(|m| m.get(0))
+            .and_then(|first| first.get("Extras"))
+            .and_then(|e| e.get("Metadata"))
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let obj = item.as_object()?;
+                        let title = obj.get("title")?.as_str()?.to_string();
+                        let key = obj
+                            .get("key")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let rating_key = obj
+                            .get("ratingKey")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        let thumb = obj.get("thumb").and_then(|v| v.as_str()).map(String::from);
+                        let extra_type = obj
+                            .get("subtype")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        Some(PlexExtra {
+                            rating_key,
+                            title,
+                            key,
+                            extra_type,
+                            thumb,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(extras)
     }
 
     /// Creates a play queue for instant playback. Uses a unique client_identifier to allow
