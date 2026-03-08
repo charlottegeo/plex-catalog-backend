@@ -4,8 +4,8 @@ use crate::{
     error::ApiError,
     models::{
         DbServer, EpisodeDetails, ImageQuery, Item, ItemList, ItemWithDetails, Library,
-        MediaDetails, MediaRequest, MediaRequestPayload, PlayQueueResponse, SearchQuery, SearchResult,
-        SeasonSummary, SystemInfo,
+        MediaDetails, MediaRequest, MediaRequestPayload, PlayQueueResponse, SearchQuery,
+        SearchResult, SeasonSummary, SystemInfo,
     },
     AppState, SYNC_INTERVAL_MINUTES,
 };
@@ -301,7 +301,7 @@ async fn get_image_handler(
 
 /// Search Plex's global discover catalog for movies and TV shows.
 ///
-/// Uses an active server's access token to query metadata.provider.plex.tv.
+/// Uses the Plex account token to query metadata.provider.plex.tv.
 #[utoipa::path(
     get,
     path = "/api/discover",
@@ -313,19 +313,7 @@ async fn discover_handler(
     state: web::Data<AppState>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, ApiError> {
-    let servers = db::get_all_servers(&state.db_pool).await?;
-    let token = servers
-        .into_iter()
-        .find(|s| s.is_online && !s.access_token.is_empty())
-        .map(|s| s.access_token)
-        .ok_or_else(|| {
-            ApiError::NotFound("No online server with access token available".to_string())
-        })?;
-
-    let results = state
-        .plex_client
-        .search_global_discover(&token, &query.q)
-        .await?;
+    let results = state.plex_client.search_global_discover(&query.q).await?;
 
     Ok(HttpResponse::Ok().json(results))
 }
