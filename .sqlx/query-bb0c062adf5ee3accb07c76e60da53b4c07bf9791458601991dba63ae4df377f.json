@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT i.id, i.server_id, s.name as \"server_name!\", i.guid as \"guid?\", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE i.guid = $1\n        ",
+  "query": "\n        SELECT i.id, i.server_id, s.name as \"server_name!\", s.access_token as \"access_token!\", i.guid as \"guid?\", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE i.guid = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -20,51 +20,56 @@
       },
       {
         "ordinal": 3,
+        "name": "access_token!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
         "name": "guid?",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "title",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "summary",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "year",
         "type_info": "Int2"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "originally_available_at",
         "type_info": "Date"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "art_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "thumb_path",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "item_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "content_rating",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "duration",
         "type_info": "Int8"
       }
@@ -75,6 +80,7 @@
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -90,5 +96,5 @@
       true
     ]
   },
-  "hash": "d5ec11f91bc97a7ed115946de113c219b3a6197f6311c81802e6d0473100b5e0"
+  "hash": "bb0c062adf5ee3accb07c76e60da53b4c07bf9791458601991dba63ae4df377f"
 }

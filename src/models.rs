@@ -309,6 +309,7 @@ pub struct ServerAvailability {
     pub server_id: String,
     pub server_name: String,
     pub rating_key: String,
+    pub access_token: String,
     pub versions: Vec<MediaVersion>,
 }
 

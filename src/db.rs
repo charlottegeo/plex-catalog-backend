@@ -10,6 +10,7 @@ struct ItemByGuid {
     id: String,
     server_id: String,
     server_name: String,
+    access_token: String,
     guid: Option<String>,
     title: String,
     summary: Option<String>,
@@ -671,7 +672,7 @@ pub async fn get_details_by_guid(
     let items = sqlx::query_as!(
         ItemByGuid,
         r#"
-        SELECT i.id, i.server_id, s.name as "server_name!", i.guid as "guid?", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration
+        SELECT i.id, i.server_id, s.name as "server_name!", s.access_token as "access_token!", i.guid as "guid?", i.title, i.summary, i.year, i.originally_available_at, i.art_path, i.thumb_path, i.item_type, i.content_rating, i.duration
         FROM items i
         JOIN servers s ON i.server_id = s.id
         WHERE i.guid = $1
@@ -736,6 +737,7 @@ pub async fn get_details_by_guid(
             server_id: item.server_id.clone(),
             server_name: item.server_name.clone(),
             rating_key: item.id.clone(),
+            access_token: item.access_token.clone(),
             versions: server_versions,
         });
     }
