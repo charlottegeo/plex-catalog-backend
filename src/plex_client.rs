@@ -298,7 +298,6 @@ impl PlexClient {
     }
 
     /// Searches Plex's global catalog/discover for movies and TV shows.
-    /// Uses metadata.provider.plex.tv/library/search
     pub async fn search_global_discover(
         &self,
         query: &str,
@@ -308,7 +307,7 @@ impl PlexClient {
 
         let response = self
             .http_client
-            .get("https://metadata.provider.plex.tv/library/search")
+            .get("https://discover.provider.plex.tv/library/search")
             .query(&[
                 ("query", query),
                 ("searchTypes", "movies,tv"),
@@ -321,6 +320,10 @@ impl PlexClient {
             .await?;
 
         if !response.status().is_success() {
+            tracing::warn!(
+                "Plex Discover API returned non-success status: {}",
+                response.status()
+            );
             return Ok(serde_json::json!({
                 "MediaContainer": {
                     "Metadata": []
@@ -328,7 +331,22 @@ impl PlexClient {
             }));
         }
 
-        Ok(response.json().await?)
+        let text_response = response.text().await?;
+        match serde_json::from_str(&text_response) {
+            Ok(json) => Ok(json),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to parse Plex Discover JSON: {}\nRaw response: {}",
+                    e,
+                    text_response
+                );
+                Ok(serde_json::json!({
+                    "MediaContainer": {
+                        "Metadata": []
+                    }
+                }))
+            }
+        }
     }
 
     pub async fn get_image(
