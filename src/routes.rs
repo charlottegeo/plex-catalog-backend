@@ -2,15 +2,11 @@ use crate::auth::{CSHAuth, User};
 use crate::{
     db,
     error::ApiError,
-    models::{
-        DbServer, EpisodeDetails, ImageQuery, Item, ItemList, ItemWithDetails, Library,
-        MediaDetails, MediaRequest, MediaRequestPayload, PlayQueueResponse, SearchQuery,
-        SearchResult, SeasonSummary, SystemInfo,
-    },
+    models::{DbServer, ImageQuery, MediaRequestPayload, SearchQuery},
     AppState, SYNC_INTERVAL_MINUTES,
 };
 use actix_web::{
-    get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result,
+    delete, get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result,
 };
 
 async fn get_server_details_or_404(
@@ -37,6 +33,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(search_handler)
             .service(discover_handler)
             .service(create_request_handler)
+            .service(get_all_requests_handler)
+            .service(delete_request_handler)
             .service(get_media_details_handler)
             .service(get_seasons_handler)
             .service(get_episodes_handler)
@@ -348,6 +346,49 @@ async fn create_request_handler(
         db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
 
     Ok(HttpResponse::Ok().json(request))
+}
+
+/// List all media requests (both pending and fulfilled).
+#[utoipa::path(
+    get,
+    path = "/api/requests",
+    responses((status = 200, description = "List of all requests", body = Vec<MediaRequest>))
+)]
+#[get("/requests")]
+async fn get_all_requests_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
+    let requests = db::get_all_requests(&state.db_pool).await?;
+    Ok(HttpResponse::Ok().json(requests))
+}
+
+/// Delete the user's own pending request.
+#[utoipa::path(
+    delete,
+    path = "/api/requests/{id}",
+    params(("id" = i32, Path, description = "Request ID to delete")),
+    responses(
+        (status = 200, description = "Request deleted"),
+        (status = 403, description = "Request not found or does not belong to user")
+    )
+)]
+#[delete("/requests/{id}")]
+async fn delete_request_handler(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i32>,
+) -> Result<impl Responder, ApiError> {
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    let id = path.into_inner();
+    let rows_affected = db::delete_request(&state.db_pool, id, &username).await?;
+    if rows_affected == 0 {
+        return Err(ApiError::NotFound(
+            "Request not found or does not belong to you".to_string(),
+        ));
+    }
+    Ok(HttpResponse::Ok().finish())
 }
 
 /// Full-text search over the catalog.

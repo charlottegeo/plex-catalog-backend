@@ -59,6 +59,8 @@ impl Modify for SecurityAddon {
         routes::search_handler,
         routes::discover_handler,
         routes::create_request_handler,
+        routes::get_all_requests_handler,
+        routes::delete_request_handler,
         routes::get_media_details_handler,
         routes::get_seasons_handler,
         routes::get_episodes_handler,

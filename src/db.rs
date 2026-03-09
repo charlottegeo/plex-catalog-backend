@@ -1,7 +1,6 @@
 use crate::models::{
     DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaRequest,
-    MediaVersion, Part, PlexExtra, SearchResult, SeasonSummary, ServerAvailability, Stream,
-    SystemInfo,
+    MediaVersion, Part, SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -916,8 +915,8 @@ pub async fn create_or_update_request(
     use sqlx::Row;
     let row = sqlx::query(
         r#"
-        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade)
-        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
         ON CONFLICT (username, guid) WHERE (status = 'pending')
         DO UPDATE SET
             title = EXCLUDED.title,
@@ -929,8 +928,9 @@ pub async fn create_or_update_request(
             ),
             requested_resolution = COALESCE(EXCLUDED.requested_resolution, media_requests.requested_resolution),
             is_upgrade = EXCLUDED.is_upgrade,
+            thumb = COALESCE(EXCLUDED.thumb, media_requests.thumb),
             updated_at = NOW()
-        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, created_at, updated_at
+        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, created_at, updated_at
         "#,
     )
     .bind(username)
@@ -940,6 +940,7 @@ pub async fn create_or_update_request(
     .bind(&payload.requested_seasons)
     .bind(&payload.requested_resolution)
     .bind(is_upgrade)
+    .bind(&payload.thumb)
     .fetch_one(pool)
     .await?;
 
@@ -952,6 +953,7 @@ pub async fn create_or_update_request(
         requested_seasons: row.try_get("requested_seasons")?,
         requested_resolution: row.try_get("requested_resolution")?,
         is_upgrade: row.try_get("is_upgrade")?,
+        thumb: row.try_get("thumb")?,
         status: row.try_get("status")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -963,7 +965,7 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, status, created_at, updated_at
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, status, created_at, updated_at
         FROM media_requests
         WHERE status = 'pending'
         ORDER BY created_at ASC
@@ -971,6 +973,34 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     )
     .fetch_all(pool)
     .await
+}
+
+/// Fetch all media requests (both pending and fulfilled).
+pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::Error> {
+    sqlx::query_as!(
+        MediaRequest,
+        r#"
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, status, created_at, updated_at
+        FROM media_requests
+        ORDER BY
+          CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+          created_at DESC
+        "#
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Delete a user's own pending request.
+pub async fn delete_request(pool: &PgPool, id: i32, username: &str) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM media_requests WHERE id = $1 AND username = $2 AND status = 'pending'",
+        id,
+        username
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Mark a media request as fulfilled.

@@ -373,6 +373,7 @@ pub struct MediaRequestPayload {
     pub item_type: String,
     pub requested_seasons: Option<Vec<i32>>,
     pub requested_resolution: Option<String>,
+    pub thumb: Option<String>,
 }
 
 /// Media request from the database.
@@ -387,6 +388,7 @@ pub struct MediaRequest {
     pub requested_seasons: Option<Vec<i32>>,
     pub requested_resolution: Option<String>,
     pub is_upgrade: bool,
+    pub thumb: Option<String>,
     pub status: String,
     #[schema(value_type = String)]
     pub created_at: DateTime<Utc>,
