@@ -266,7 +266,12 @@ impl PlexClient {
             .header("X-Plex-Token", server_token)
             .header("X-Plex-Client-Identifier", client_id)
             .header("X-Plex-Product", "Plex Catalog Web")
-            .query(&[("uri", item_uri), ("type", "video")])
+            .query(&[
+                ("uri", item_uri),
+                ("type", "video"),
+                ("continuous", "1"),
+                ("includeChapters", "1"),
+            ])
             .send()
             .await?
             .error_for_status()?;

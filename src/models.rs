@@ -413,9 +413,9 @@ pub struct MediaRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PlayQueueResponse {
     #[serde(rename = "playQueueID")]
-    pub play_queue_id: i64,
+    pub play_queue_id: serde_json::Value,
     #[serde(rename = "playQueueSelectedItemID")]
-    pub play_queue_selected_item_id: Option<i64>,
+    pub play_queue_selected_item_id: Option<serde_json::Value>,
     #[serde(rename = "Metadata", default)]
     pub metadata: Vec<serde_json::Value>,
 }
