@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, status, created_at, updated_at\n        FROM media_requests\n        WHERE status = 'pending'\n        ORDER BY created_at ASC\n        ",
+  "query": "\n        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at\n        FROM media_requests\n        WHERE status = 'pending'\n        ORDER BY created_at ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -50,16 +50,21 @@
       },
       {
         "ordinal": 9,
+        "name": "is_viewed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -79,8 +84,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "0151f30b505381d815cc476a85cf0f514cd5e4b130aaf3b65b3b54644638d21b"
+  "hash": "7c8e67de36360b7dd1ab9e0140d792682b520966b4c6d8455ef5dbf5fcd71e03"
 }

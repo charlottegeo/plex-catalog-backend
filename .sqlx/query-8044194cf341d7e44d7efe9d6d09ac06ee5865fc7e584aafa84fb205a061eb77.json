@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM media_requests\n        WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')\n           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "8044194cf341d7e44d7efe9d6d09ac06ee5865fc7e584aafa84fb205a061eb77"
+}

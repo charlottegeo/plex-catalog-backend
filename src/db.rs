@@ -915,8 +915,8 @@ pub async fn create_or_update_request(
     use sqlx::Row;
     let row = sqlx::query(
         r#"
-        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb)
-        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, false)
         ON CONFLICT (username, guid) WHERE (status = 'pending')
         DO UPDATE SET
             title = EXCLUDED.title,
@@ -929,8 +929,9 @@ pub async fn create_or_update_request(
             requested_resolution = COALESCE(EXCLUDED.requested_resolution, media_requests.requested_resolution),
             is_upgrade = EXCLUDED.is_upgrade,
             thumb = COALESCE(EXCLUDED.thumb, media_requests.thumb),
+            is_viewed = false,
             updated_at = NOW()
-        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, created_at, updated_at
+        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, created_at, updated_at
         "#,
     )
     .bind(username)
@@ -954,6 +955,7 @@ pub async fn create_or_update_request(
         requested_resolution: row.try_get("requested_resolution")?,
         is_upgrade: row.try_get("is_upgrade")?,
         thumb: row.try_get("thumb")?,
+        is_viewed: row.try_get("is_viewed")?,
         status: row.try_get("status")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -965,7 +967,7 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, status, created_at, updated_at
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at
         FROM media_requests
         WHERE status = 'pending'
         ORDER BY created_at ASC
@@ -980,7 +982,7 @@ pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, status, created_at, updated_at
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at
         FROM media_requests
         ORDER BY
           CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
@@ -1014,14 +1016,44 @@ pub async fn mark_request_fulfilled(pool: &PgPool, id: i32) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Delete stale pending requests older than 30 days.
+/// Delete stale/outdated requests: pending > 30 days by created_at, fulfilled > 30 days by updated_at.
 pub async fn delete_stale_requests(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result: sqlx::postgres::PgQueryResult = sqlx::query!(
-        "DELETE FROM media_requests WHERE status = 'pending' AND created_at < NOW() - INTERVAL '30 days'"
+        r#"
+        DELETE FROM media_requests
+        WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')
+           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')
+        "#
     )
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Get the number of unread fulfilled requests for a user.
+pub async fn get_unread_notification_count(
+    pool: &PgPool,
+    username: &str,
+) -> Result<i64, sqlx::Error> {
+    let count = sqlx::query_scalar!(
+        "SELECT COUNT(*) as count FROM media_requests WHERE username = $1 AND status = 'fulfilled' AND is_viewed = FALSE",
+        username
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or(0);
+    Ok(count)
+}
+
+/// Mark all fulfilled requests for a user as viewed.
+pub async fn mark_requests_viewed(pool: &PgPool, username: &str) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE media_requests SET is_viewed = TRUE WHERE username = $1 AND status = 'fulfilled' AND is_viewed = FALSE",
+        username
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Strips the plex:// prefix from the guid to match against items table.

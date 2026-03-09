@@ -376,6 +376,12 @@ pub struct MediaRequestPayload {
     pub thumb: Option<String>,
 }
 
+/// Number of unread notifications.
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+pub struct NotificationCount {
+    pub count: i64,
+}
+
 /// Media request from the database.
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -389,6 +395,7 @@ pub struct MediaRequest {
     pub requested_resolution: Option<String>,
     pub is_upgrade: bool,
     pub thumb: Option<String>,
+    pub is_viewed: bool,
     pub status: String,
     #[schema(value_type = String)]
     pub created_at: DateTime<Utc>,

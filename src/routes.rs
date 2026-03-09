@@ -2,7 +2,7 @@ use crate::auth::{CSHAuth, User};
 use crate::{
     db,
     error::ApiError,
-    models::{DbServer, ImageQuery, MediaRequestPayload, SearchQuery},
+    models::{DbServer, ImageQuery, MediaRequestPayload, NotificationCount, SearchQuery},
     AppState, SYNC_INTERVAL_MINUTES,
 };
 use actix_web::{
@@ -35,6 +35,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(create_request_handler)
             .service(get_all_requests_handler)
             .service(delete_request_handler)
+            .service(get_notification_count_handler)
+            .service(clear_notifications_handler)
             .service(get_media_details_handler)
             .service(get_seasons_handler)
             .service(get_episodes_handler)
@@ -388,6 +390,46 @@ async fn delete_request_handler(
             "Request not found or does not belong to you".to_string(),
         ));
     }
+    Ok(HttpResponse::Ok().finish())
+}
+
+/// Get number of unread notifications for a user.
+#[utoipa::path(
+    get,
+    path = "/api/requests/notifications/count",
+    responses((status = 200, description = "Unread notification count", body = NotificationCount))
+)]
+#[get("/requests/notifications/count")]
+async fn get_notification_count_handler(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> Result<impl Responder, ApiError> {
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    let count = db::get_unread_notification_count(&state.db_pool, &username).await?;
+    Ok(HttpResponse::Ok().json(NotificationCount { count }))
+}
+
+/// Mark all requests for a user as viewed/clear notifications.
+#[utoipa::path(
+    post,
+    path = "/api/requests/notifications/clear",
+    responses((status = 200, description = "Notifications cleared"))
+)]
+#[post("/requests/notifications/clear")]
+async fn clear_notifications_handler(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> Result<impl Responder, ApiError> {
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    db::mark_requests_viewed(&state.db_pool, &username).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
