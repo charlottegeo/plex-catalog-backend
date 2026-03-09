@@ -414,6 +414,8 @@ pub struct MediaRequest {
 pub struct PlayQueueResponse {
     #[serde(rename = "playQueueID")]
     pub play_queue_id: i64,
+    #[serde(rename = "playQueueSelectedItemID")]
+    pub play_queue_selected_item_id: Option<i64>,
     #[serde(rename = "Metadata", default)]
     pub metadata: Vec<serde_json::Value>,
 }
