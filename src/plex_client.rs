@@ -305,19 +305,19 @@ impl PlexClient {
         self.ensure_logged_in().await?;
         let token = self.auth_token.read().await.as_ref().unwrap().clone();
 
+        let url = format!(
+            "https://discover.provider.plex.tv/library/search?query={}&searchTypes=movies,tv&includeMetadata=1&limit=30",
+            urlencoding::encode(query)
+        );
+
         let response = self
             .http_client
-            .get("https://discover.provider.plex.tv/library/search")
-            .query(&[
-                ("query", query),
-                ("searchTypes", "movie,show"),
-                ("searchProviders", "discover"),
-                ("includeMetadata", "1"),
-                ("limit", "30"),
-            ])
+            .get(&url)
             .header("Accept", "application/json")
             .header("X-Plex-Token", token)
             .header("X-Plex-Client-Identifier", &self.client_identifier)
+            .header("X-Plex-Product", "Plex Catalog Web")
+            .header("X-Plex-Language", "en")
             .send()
             .await?;
 
