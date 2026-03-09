@@ -534,11 +534,7 @@ async fn create_play_queue_handler(
     req: actix_web::HttpRequest,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, rating_key) = path.into_inner();
-    let client = &state.plex_client;
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
-
-    let base = server_details.connection_uri.trim_end_matches('/');
-    let item_uri = format!("{}/library/metadata/{}", base, rating_key);
 
     let client_id = req
         .headers()
@@ -546,11 +542,13 @@ async fn create_play_queue_handler(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let container = client
+    let container = state
+        .plex_client
         .create_play_queue(
             &server_details.connection_uri,
             &server_details.access_token,
-            &item_uri,
+            &server_id,
+            &rating_key,
             client_id.as_deref(),
         )
         .await?;

@@ -252,12 +252,18 @@ impl PlexClient {
         &self,
         server_uri: &str,
         server_token: &str,
-        item_uri: &str,
+        machine_id: &str,
+        rating_key: &str,
         client_identifier: Option<&str>,
     ) -> Result<PlayQueueContainer, reqwest::Error> {
         let client_id = client_identifier.unwrap_or(&self.client_identifier);
         let base = server_uri.trim_end_matches('/');
         let url = format!("{}/playQueues", base);
+
+        let internal_uri = format!(
+            "server://{}/com.plexapp.plugins.library/library/metadata/{}",
+            machine_id, rating_key
+        );
 
         let response = self
             .http_client
@@ -267,10 +273,11 @@ impl PlexClient {
             .header("X-Plex-Client-Identifier", client_id)
             .header("X-Plex-Product", "Plex Catalog Web")
             .query(&[
-                ("uri", item_uri),
+                ("uri", internal_uri.as_str()),
                 ("type", "video"),
                 ("continuous", "1"),
                 ("includeChapters", "1"),
+                ("includeMarkers", "1"),
             ])
             .send()
             .await?
