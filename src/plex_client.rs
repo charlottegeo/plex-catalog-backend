@@ -306,7 +306,7 @@ impl PlexClient {
         let token = self.auth_token.read().await.as_ref().unwrap().clone();
 
         let url = format!(
-            "https://discover.provider.plex.tv/library/search?query={}&searchTypes=movies,tv&includeMetadata=1&limit=30",
+            "https://discover.provider.plex.tv/library/search?query={}&limit=30&searchTypes=movies%2Ctv&searchProviders=discover%2CplexAVOD%2CplexTVOD&includeMetadata=1",
             urlencoding::encode(query)
         );
 
@@ -317,6 +317,7 @@ impl PlexClient {
             .header("X-Plex-Token", token)
             .header("X-Plex-Client-Identifier", &self.client_identifier)
             .header("X-Plex-Product", "Plex Catalog Web")
+            .header("X-Plex-Provider-Version", "7.2")
             .header("X-Plex-Language", "en")
             .send()
             .await?;
@@ -327,28 +328,48 @@ impl PlexClient {
                 response.status()
             );
             return Ok(serde_json::json!({
-                "MediaContainer": {
-                    "Metadata": []
-                }
+                "MediaContainer": { "Metadata": [] }
             }));
         }
 
         let text_response = response.text().await?;
-        match serde_json::from_str(&text_response) {
-            Ok(json) => Ok(json),
+        let json: serde_json::Value = match serde_json::from_str(&text_response) {
+            Ok(j) => j,
             Err(e) => {
-                tracing::error!(
-                    "Failed to parse Plex Discover JSON: {}\nRaw response: {}",
-                    e,
-                    text_response
-                );
-                Ok(serde_json::json!({
-                    "MediaContainer": {
-                        "Metadata": []
+                tracing::error!("Failed to parse Plex Discover JSON: {}", e);
+                return Ok(serde_json::json!({ "MediaContainer": { "Metadata": [] } }));
+            }
+        };
+
+        let mut flat_metadata = Vec::new();
+        let mut seen_guids = std::collections::HashSet::new();
+
+        if let Some(search_results) = json["MediaContainer"]["SearchResults"].as_array() {
+            for bucket in search_results {
+                if bucket["id"] == "people" {
+                    continue;
+                }
+
+                if let Some(results) = bucket["SearchResult"].as_array() {
+                    for result in results {
+                        if let Some(metadata) = result["Metadata"].as_object() {
+                            if let Some(guid) = metadata.get("guid").and_then(|g| g.as_str()) {
+                                if !seen_guids.contains(guid) {
+                                    seen_guids.insert(guid.to_string());
+                                    flat_metadata.push(serde_json::Value::Object(metadata.clone()));
+                                }
+                            }
+                        }
                     }
-                }))
+                }
             }
         }
+
+        Ok(serde_json::json!({
+            "MediaContainer": {
+                "Metadata": flat_metadata
+            }
+        }))
     }
 
     pub async fn get_image(
