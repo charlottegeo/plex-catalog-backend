@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,\n            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,\n            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n            (\n                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])\n                FROM items i\n                JOIN servers s ON i.server_id = s.id\n                WHERE i.guid = REPLACE(mr.guid, 'plex://', '')\n            ) as \"server_names: Vec<String>\"\n        FROM media_requests mr\n        ORDER BY\n            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,\n            mr.created_at DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "guid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "item_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "requested_seasons",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 6,
+        "name": "requested_resolution",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_upgrade",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "thumb",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "year",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "duration",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "is_viewed",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "server_names: Vec<String>",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "d78bd95a5ce5dd79c7e653677aacd25a1481c7fda62b8f4ad33fe99edd2a7ad2"
+}

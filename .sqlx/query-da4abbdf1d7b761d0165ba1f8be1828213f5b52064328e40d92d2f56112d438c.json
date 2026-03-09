@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at\n        FROM media_requests\n        ORDER BY\n          CASE WHEN status = 'pending' THEN 0 ELSE 1 END,\n          created_at DESC\n        ",
+  "query": "\n        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as \"server_names: Vec<String>\", status, created_at, updated_at\n        FROM media_requests\n        WHERE status = 'pending'\n        ORDER BY created_at ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -55,16 +55,31 @@
       },
       {
         "ordinal": 10,
+        "name": "year",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "duration",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "server_names: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 13,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 14,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 15,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -83,10 +98,13 @@
       false,
       true,
       false,
+      true,
+      true,
+      null,
       false,
       false,
       false
     ]
   },
-  "hash": "e0d304afa30c7bf50aa3dbdf07dc446ce3f4490bc481245c8f4ef96ffe0b234d"
+  "hash": "da4abbdf1d7b761d0165ba1f8be1828213f5b52064328e40d92d2f56112d438c"
 }

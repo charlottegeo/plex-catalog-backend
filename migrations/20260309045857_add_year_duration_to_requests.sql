@@ -1,0 +1,3 @@
+ALTER TABLE media_requests
+ADD COLUMN year INTEGER,
+ADD COLUMN duration BIGINT;

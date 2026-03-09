@@ -374,6 +374,8 @@ pub struct MediaRequestPayload {
     pub requested_seasons: Option<Vec<i32>>,
     pub requested_resolution: Option<String>,
     pub thumb: Option<String>,
+    pub year: Option<i32>,
+    pub duration: Option<i64>,
 }
 
 /// Number of unread notifications.
@@ -396,6 +398,9 @@ pub struct MediaRequest {
     pub is_upgrade: bool,
     pub thumb: Option<String>,
     pub is_viewed: bool,
+    pub year: Option<i32>,
+    pub duration: Option<i64>,
+    pub server_names: Option<Vec<String>>,
     pub status: String,
     #[schema(value_type = String)]
     pub created_at: DateTime<Utc>,

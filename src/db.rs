@@ -915,8 +915,8 @@ pub async fn create_or_update_request(
     use sqlx::Row;
     let row = sqlx::query(
         r#"
-        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed)
-        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, false)
+        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, false, $9, $10)
         ON CONFLICT (username, guid) WHERE (status = 'pending')
         DO UPDATE SET
             title = EXCLUDED.title,
@@ -929,9 +929,11 @@ pub async fn create_or_update_request(
             requested_resolution = COALESCE(EXCLUDED.requested_resolution, media_requests.requested_resolution),
             is_upgrade = EXCLUDED.is_upgrade,
             thumb = COALESCE(EXCLUDED.thumb, media_requests.thumb),
+            year = COALESCE(EXCLUDED.year, media_requests.year),
+            duration = COALESCE(EXCLUDED.duration, media_requests.duration),
             is_viewed = false,
             updated_at = NOW()
-        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, created_at, updated_at
+        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration, created_at, updated_at
         "#,
     )
     .bind(username)
@@ -942,6 +944,8 @@ pub async fn create_or_update_request(
     .bind(&payload.requested_resolution)
     .bind(is_upgrade)
     .bind(&payload.thumb)
+    .bind(&payload.year)
+    .bind(&payload.duration)
     .fetch_one(pool)
     .await?;
 
@@ -956,6 +960,9 @@ pub async fn create_or_update_request(
         is_upgrade: row.try_get("is_upgrade")?,
         thumb: row.try_get("thumb")?,
         is_viewed: row.try_get("is_viewed")?,
+        year: row.try_get("year")?,
+        duration: row.try_get("duration")?,
+        server_names: Some(vec![]),
         status: row.try_get("status")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -967,7 +974,7 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at
+        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at
         FROM media_requests
         WHERE status = 'pending'
         ORDER BY created_at ASC
@@ -982,11 +989,20 @@ pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, status, created_at, updated_at
-        FROM media_requests
+        SELECT
+            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,
+            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,
+            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
+            (
+                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])
+                FROM items i
+                JOIN servers s ON i.server_id = s.id
+                WHERE i.guid = REPLACE(mr.guid, 'plex://', '')
+            ) as "server_names: Vec<String>"
+        FROM media_requests mr
         ORDER BY
-          CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
-          created_at DESC
+            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,
+            mr.created_at DESC
         "#
     )
     .fetch_all(pool)
