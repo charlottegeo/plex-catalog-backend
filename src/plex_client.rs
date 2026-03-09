@@ -310,8 +310,10 @@ impl PlexClient {
             .get("https://discover.provider.plex.tv/library/search")
             .query(&[
                 ("query", query),
-                ("searchTypes", "movies,tv"),
+                ("searchTypes", "movie,show"),
+                ("searchProviders", "discover"),
                 ("includeMetadata", "1"),
+                ("limit", "30"),
             ])
             .header("Accept", "application/json")
             .header("X-Plex-Token", token)
