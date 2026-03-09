@@ -16,6 +16,7 @@ mod auth;
 mod db;
 mod error;
 mod models;
+mod pings;
 mod plex_client;
 mod routes;
 
@@ -1150,15 +1151,20 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
     }
 
-    if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
-        if deleted > 0 {
-            tracing::info!(
-                "Deleted {} stale media requests (pending > 30 days)",
-                deleted
-            );
+    if let Ok(stale) = db::get_stale_requests(&db_pool).await {
+        for sr in &stale {
+            let _ = pings::send_stale_ping(&sr.username, &sr.title).await;
+        }
+        if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
+            if deleted > 0 {
+                tracing::info!(
+                    "Deleted {} stale media requests (pending/fulfilled > 30 days)",
+                    deleted
+                );
+            }
         }
     } else {
-        tracing::warn!("Failed to delete stale media requests");
+        tracing::warn!("Failed to fetch stale media requests");
     }
 
     if let Ok(pending) = db::get_pending_requests(&db_pool).await {
@@ -1196,7 +1202,20 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                         req.id,
                         req.username
                     );
-                    // TODO: send ping to user
+                    let resolution = req
+                        .requested_resolution
+                        .as_deref()
+                        .unwrap_or("any resolution");
+                    let server_names = db::get_server_names_for_guid(&db_pool, &req.guid)
+                        .await
+                        .unwrap_or_default();
+                    let _ = pings::send_fulfilled_ping(
+                        &req.username,
+                        &req.title,
+                        resolution,
+                        &server_names,
+                    )
+                    .await;
                 }
             }
         }

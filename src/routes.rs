@@ -1,4 +1,5 @@
 use crate::auth::{CSHAuth, User};
+use crate::pings;
 use crate::{
     db,
     error::ApiError,
@@ -347,6 +348,17 @@ async fn create_request_handler(
     let request =
         db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
 
+    let _ = pings::send_request_ping(pings::RequestPingDetails {
+        username: &username,
+        title: &payload.title,
+        year: payload.year,
+        item_type: &payload.item_type,
+        requested_seasons: payload.requested_seasons.as_deref(),
+        requested_resolution: payload.requested_resolution.as_deref(),
+        is_upgrade,
+    })
+    .await;
+
     Ok(HttpResponse::Ok().json(request))
 }
 
@@ -528,19 +540,18 @@ async fn create_play_queue_handler(
     let base = server_details.connection_uri.trim_end_matches('/');
     let item_uri = format!("{}/library/metadata/{}", base, rating_key);
 
-    let client_identifier = req
+    let client_id = req
         .headers()
         .get("X-Plex-Client-Identifier")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let client_id = client_identifier.as_deref();
     let container = client
         .create_play_queue(
             &server_details.connection_uri,
             &server_details.access_token,
             &item_uri,
-            client_id,
+            client_id.as_deref(),
         )
         .await?;
 

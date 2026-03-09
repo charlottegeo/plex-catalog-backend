@@ -1072,6 +1072,43 @@ pub async fn mark_requests_viewed(pool: &PgPool, username: &str) -> Result<(), s
     Ok(())
 }
 
+/// Get server names that have an item with the given guid.
+pub async fn get_server_names_for_guid(
+    pool: &PgPool,
+    guid: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let normalized = guid.strip_prefix("plex://").unwrap_or(guid);
+    let rows = sqlx::query_scalar!(
+        "SELECT DISTINCT s.name FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = $1",
+        normalized
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Stale request info for pings before deletion.
+pub struct StaleRequest {
+    pub username: String,
+    pub title: String,
+}
+
+/// Fetch requests that will be deleted by delete_stale_requests (for pings).
+pub async fn get_stale_requests(pool: &PgPool) -> Result<Vec<StaleRequest>, sqlx::Error> {
+    let rows = sqlx::query_as!(
+        StaleRequest,
+        r#"
+        SELECT username, title
+        FROM media_requests
+        WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')
+           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Strips the plex:// prefix from the guid to match against items table.
 fn guid_for_item_lookup(guid: &str) -> &str {
     guid.strip_prefix("plex://").unwrap_or(guid)
