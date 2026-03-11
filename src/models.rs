@@ -40,6 +40,8 @@ pub struct Device {
     pub client_identifier: String,
     #[serde(rename = "accessToken")]
     pub access_token: Option<String>,
+    #[serde(rename = "sourceTitle")]
+    pub source_title: Option<String>,
     pub connections: Vec<Connection>,
 }
 
@@ -238,7 +240,10 @@ pub struct SystemInfo {
 #[serde(rename_all = "camelCase")]
 pub struct DbServer {
     pub id: String,
+    /// Server name/nickname.
     pub name: String,
+    /// Plex owner username (Plex's `sourceTitle`).
+    pub owner_username: Option<String>,
     pub is_online: bool,
     pub access_token: String,
     pub connection_uri: String,
@@ -349,6 +354,7 @@ impl From<DbServer> for Device {
             provides: "server".to_string(),
             client_identifier: db_server.id,
             access_token: Some(db_server.access_token),
+            source_title: db_server.owner_username,
             connections: vec![Connection {
                 uri: db_server.connection_uri,
                 local: false,

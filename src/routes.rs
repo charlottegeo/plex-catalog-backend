@@ -358,6 +358,33 @@ async fn create_request_handler(
     })
     .await;
 
+    if let Ok(servers) = db::get_all_servers(&state.db_pool).await {
+        let mut unique_owners = std::collections::HashSet::new();
+
+        for server in servers {
+            if let Some(owner) = server.owner_username {
+                if !owner.trim().is_empty() {
+                    unique_owners.insert(owner);
+                }
+            }
+        }
+
+        for owner in unique_owners {
+            match state.ldap_client.get_csh_uid_by_plex(&owner).await {
+                Ok(Some(csh_uid)) => {
+                    tracing::info!(
+                        "{} owns the server for {}",
+                        csh_uid,
+                        owner
+                    );
+                    // TODO: Replace print with pings
+                }
+                Ok(None) => tracing::info!("No CSH user found for Plex user '{}'", owner),
+                Err(e) => tracing::error!("LDAP Error when looking up '{}': {}", owner, e),
+            }
+        }
+    }
+
     Ok(HttpResponse::Ok().json(request))
 }
 

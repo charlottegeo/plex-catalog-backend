@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "is_online",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "owner_username",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -43,7 +48,8 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
   "hash": "16d67824d8e6b6d940e111e0817f421216e4be806ed576620580765dc929f9d2"

@@ -251,6 +251,7 @@ pub async fn upsert_server(
     sync_time: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     let access_token = server.access_token.as_deref().unwrap_or_default();
+    let owner_username = server.source_title.as_deref();
     let connection_uri = server
         .connections
         .iter()
@@ -259,17 +260,19 @@ pub async fn upsert_server(
 
     sqlx::query!(
         r#"
-        INSERT INTO servers (id, name, access_token, connection_uri, last_seen, is_online)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO servers (id, name, owner_username, access_token, connection_uri, last_seen, is_online)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (id) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
             is_online = EXCLUDED.is_online,
             name = CASE WHEN servers.name IS DISTINCT FROM EXCLUDED.name THEN EXCLUDED.name ELSE servers.name END,
+            owner_username = CASE WHEN servers.owner_username IS DISTINCT FROM EXCLUDED.owner_username THEN EXCLUDED.owner_username ELSE servers.owner_username END,
             access_token = CASE WHEN servers.access_token IS DISTINCT FROM EXCLUDED.access_token THEN EXCLUDED.access_token ELSE servers.access_token END,
             connection_uri = CASE WHEN servers.connection_uri IS DISTINCT FROM EXCLUDED.connection_uri THEN EXCLUDED.connection_uri ELSE servers.connection_uri END
         "#,
         server.client_identifier,
         server.name,
+        owner_username,
         access_token,
         connection_uri,
         sync_time,
