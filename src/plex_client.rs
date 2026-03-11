@@ -1,6 +1,6 @@
 use crate::models::{
     Device, ItemList, ItemMediaContainer, ItemWithDetails, LibraryList, LibraryMediaContainer,
-    LoginResponse, PlayQueueContainer, PlexExtra, SingleItemMediaContainer,
+    LoginResponse, PlexExtra, SingleItemMediaContainer,
 };
 use reqwest::{Client, ClientBuilder, Response};
 use serde_json::json;
@@ -244,47 +244,6 @@ impl PlexClient {
             })
             .unwrap_or_default();
         Ok(extras)
-    }
-
-    /// Creates a play queue for instant playback. Uses a unique client_identifier to allow
-    /// multiple users on the same account to have their own queues.
-    pub async fn create_play_queue(
-        &self,
-        server_uri: &str,
-        server_token: &str,
-        machine_id: &str,
-        rating_key: &str,
-        client_identifier: Option<&str>,
-    ) -> Result<PlayQueueContainer, reqwest::Error> {
-        let client_id = client_identifier.unwrap_or(&self.client_identifier);
-        let base = server_uri.trim_end_matches('/');
-        let url = format!("{}/playQueues", base);
-
-        let internal_uri = format!(
-            "server://{}/com.plexapp.plugins.library/library/metadata/{}",
-            machine_id, rating_key
-        );
-
-        let response = self
-            .http_client
-            .post(&url)
-            .header("Accept", "application/json")
-            .header("X-Plex-Token", server_token)
-            .header("X-Plex-Client-Identifier", client_id)
-            .header("X-Plex-Product", "Plex Catalog Web")
-            .query(&[
-                ("uri", internal_uri.as_str()),
-                ("type", "video"),
-                ("continuous", "1"),
-                ("includeChapters", "1"),
-                ("includeMarkers", "1"),
-            ])
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let container: PlayQueueContainer = response.json().await?;
-        Ok(container)
     }
 
     pub async fn get_item_children(

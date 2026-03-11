@@ -67,7 +67,6 @@ impl Modify for SecurityAddon {
         routes::get_media_details_handler,
         routes::get_seasons_handler,
         routes::get_episodes_handler,
-        routes::create_play_queue_handler,
     ),
     components(schemas(
         crate::models::DbServer,
@@ -91,7 +90,6 @@ impl Modify for SecurityAddon {
         crate::models::ServerAvailability,
         crate::models::SeasonSummary,
         crate::models::EpisodeDetails,
-        crate::models::PlayQueueResponse,
     )),
     modifiers(&SecurityAddon),
     info(

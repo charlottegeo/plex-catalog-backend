@@ -40,8 +40,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(clear_notifications_handler)
             .service(get_media_details_handler)
             .service(get_seasons_handler)
-            .service(get_episodes_handler)
-            .service(create_play_queue_handler),
+            .service(get_episodes_handler),
     );
 }
 
@@ -510,50 +509,6 @@ async fn get_seasons_handler(
     let (server_id, show_id) = path.into_inner();
     let seasons = db::get_show_seasons(&state.db_pool, &show_id, &server_id).await?;
     Ok(HttpResponse::Ok().json(seasons))
-}
-
-/// Create a play queue for instant playback.
-///
-/// Calls the Plex playQueues API. Send `X-Plex-Client-Identifier` to use a unique session and avoid queue collisions between users.
-#[utoipa::path(
-    post,
-    path = "/api/servers/{server_id}/play/{rating_key}",
-    params(
-        ("server_id" = String, Path, description = "Server ID (Plex client identifier)"),
-        ("rating_key" = String, Path, description = "Item rating key to play (movie or episode)")
-    ),
-    responses(
-        (status = 200, description = "Play queue created", body = PlayQueueResponse),
-        (status = 404, description = "Server not found")
-    )
-)]
-#[post("/servers/{server_id}/play/{rating_key}")]
-async fn create_play_queue_handler(
-    state: web::Data<AppState>,
-    path: web::Path<(String, String)>,
-    req: actix_web::HttpRequest,
-) -> Result<impl Responder, ApiError> {
-    let (server_id, rating_key) = path.into_inner();
-    let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
-
-    let client_id = req
-        .headers()
-        .get("X-Plex-Client-Identifier")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-
-    let container = state
-        .plex_client
-        .create_play_queue(
-            &server_details.connection_uri,
-            &server_details.access_token,
-            &server_id,
-            &rating_key,
-            client_id.as_deref(),
-        )
-        .await?;
-
-    Ok(HttpResponse::Ok().json(container.media_container))
 }
 
 /// List episodes for a season.

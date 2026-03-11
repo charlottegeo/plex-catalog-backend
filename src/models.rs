@@ -407,22 +407,3 @@ pub struct MediaRequest {
     #[schema(value_type = String)]
     pub updated_at: DateTime<Utc>,
 }
-
-/// Response from the Plex playQueues API for instant playback of media.
-#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayQueueResponse {
-    #[serde(rename = "playQueueID")]
-    pub play_queue_id: serde_json::Value,
-    #[serde(rename = "playQueueSelectedItemID")]
-    pub play_queue_selected_item_id: Option<serde_json::Value>,
-    #[serde(rename = "Metadata", default)]
-    pub metadata: Vec<serde_json::Value>,
-}
-
-/// Container wrapper for the Plex playQueues API response.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PlayQueueContainer {
-    #[serde(rename = "MediaContainer")]
-    pub media_container: PlayQueueResponse,
-}
