@@ -456,44 +456,35 @@ pub async fn touch_items_batch(
         return Ok(());
     }
 
-    let query = r#"
-        WITH RECURSIVE affected_hierarchy AS (
-            SELECT id, server_id 
-            FROM items 
-            WHERE id = ANY($1) AND server_id = $2
-            
-            UNION
-            
-            SELECT i.id, i.server_id
-            FROM items i
-            JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = ah.server_id
-        )
+    sqlx::query(
+        r#"
         UPDATE items 
         SET last_seen = $3
-        FROM affected_hierarchy ah
-        WHERE items.id = ah.id AND items.server_id = ah.server_id;
-    "#;
-
-    sqlx::query(query)
-        .bind(item_ids)
-        .bind(server_id)
-        .bind(sync_time)
-        .execute(pool)
-        .await?;
+        WHERE server_id = $2 AND (
+            id = ANY($1)
+            OR parent_id = ANY($1)
+            OR parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+        )
+        "#,
+    )
+    .bind(item_ids)
+    .bind(server_id)
+    .bind(sync_time)
+    .execute(pool)
+    .await?;
 
     sqlx::query(
         r#"
         UPDATE media_parts 
         SET last_seen = $3
-        WHERE server_id = $2 AND item_id = ANY(
-            WITH RECURSIVE affected_hierarchy AS (
-                SELECT id FROM items WHERE id = ANY($1) AND server_id = $2
-                UNION
-                SELECT i.id FROM items i
-                JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = $2
-            ) SELECT id FROM affected_hierarchy
+        WHERE server_id = $2 AND item_id IN (
+            SELECT id FROM items WHERE server_id = $2 AND (
+                id = ANY($1)
+                OR parent_id = ANY($1)
+                OR parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+            )
         )
-    "#,
+        "#,
     )
     .bind(item_ids)
     .bind(server_id)
@@ -506,18 +497,15 @@ pub async fn touch_items_batch(
         UPDATE streams 
         SET last_seen = $3
         WHERE server_id = $2 AND media_part_id IN (
-            SELECT mp.id 
-            FROM media_parts mp
-            WHERE mp.server_id = $2 AND mp.item_id = ANY(
-                WITH RECURSIVE affected_hierarchy AS (
-                    SELECT id FROM items WHERE id = ANY($1) AND server_id = $2
-                    UNION
-                    SELECT i.id FROM items i
-                    JOIN affected_hierarchy ah ON i.parent_id = ah.id AND i.server_id = $2
-                ) SELECT id FROM affected_hierarchy
+            SELECT id FROM media_parts WHERE server_id = $2 AND item_id IN (
+                SELECT id FROM items WHERE server_id = $2 AND (
+                    id = ANY($1)
+                    OR parent_id = ANY($1)
+                    OR parent_id IN (SELECT id FROM items WHERE parent_id = ANY($1) AND server_id = $2)
+                )
             )
         )
-    "#,
+        "#,
     )
     .bind(item_ids)
     .bind(server_id)
