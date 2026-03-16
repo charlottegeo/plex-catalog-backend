@@ -1,10 +1,9 @@
 use crate::auth::{CSHAuth, User};
-use crate::pings;
 use crate::{
     db,
     error::ApiError,
     models::{DbServer, ImageQuery, MediaRequestPayload, NotificationCount, SearchQuery},
-    AppState, SYNC_INTERVAL_MINUTES,
+    AppState,
 };
 use actix_web::{
     delete, get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result,
@@ -68,7 +67,7 @@ async fn get_servers_handler(state: web::Data<AppState>) -> Result<impl Responde
 )]
 #[get("/system/info")]
 async fn get_system_info_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
-    let info = db::get_system_info(&state.db_pool, SYNC_INTERVAL_MINUTES).await?;
+    let info = db::get_system_info(&state.db_pool, state.sync_interval_minutes).await?;
     Ok(HttpResponse::Ok().json(info))
 }
 
@@ -350,17 +349,6 @@ async fn create_request_handler(
     let request =
         db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
 
-    let _ = pings::send_request_ping(pings::RequestPingDetails {
-        username: &username,
-        title: &payload.title,
-        year: payload.year,
-        item_type: &payload.item_type,
-        requested_seasons: payload.requested_seasons.as_deref(),
-        requested_resolution: payload.requested_resolution.as_deref(),
-        is_upgrade,
-    })
-    .await;
-
     if let Ok(servers) = db::get_all_servers(&state.db_pool).await {
         let mut unique_owners = std::collections::HashSet::new();
 
@@ -375,8 +363,22 @@ async fn create_request_handler(
         for owner in unique_owners {
             match state.oidc_client.get_csh_uid_by_plex(&owner).await {
                 Ok(Some(csh_uid)) => {
-                    tracing::info!("{} is {} on Plex.", csh_uid, owner);
-                    // TODO: Replace print with pings
+                    if let Err(e) = state
+                        .ping_client
+                        .send_request_ping(
+                            &csh_uid,
+                            &username,
+                            &payload.title,
+                            payload.year,
+                            &payload.item_type,
+                            payload.requested_seasons.as_deref(),
+                            payload.requested_resolution.as_deref(),
+                            is_upgrade,
+                        )
+                        .await
+                    {
+                        tracing::error!("Failed to send request ping to {}: {:?}", csh_uid, e);
+                    }
                 }
                 Ok(None) => tracing::info!("No CSH user found for Plex user '{}'", owner),
                 Err(e) => tracing::error!("OIDC Error looking up '{}': {}", owner, e),

@@ -30,9 +30,7 @@ impl Modify for SecurityAddon {
             HttpBuilder::new()
                 .scheme(HttpAuthScheme::Bearer)
                 .bearer_format("JWT")
-                .description(Some(
-                    "Keycloak JWT token, use CSH SSO login to get token.",
-                ))
+                .description(Some("Keycloak JWT token, use CSH SSO login to get token."))
                 .build(),
         );
         if let Some(components) = openapi.components.as_mut() {
@@ -101,7 +99,6 @@ impl Modify for SecurityAddon {
 )]
 struct ApiDoc;
 
-pub const SYNC_INTERVAL_MINUTES: u64 = 90;
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const DISCOVERY_WORKER_COUNT: usize = 2;
 const DETAIL_WORKER_COUNT: usize = 2;
@@ -113,6 +110,8 @@ pub struct AppState {
     pub image_cache: Cache<String, CachedImage>,
     pub sync_semaphore: Arc<Semaphore>,
     pub oidc_client: oidc_client::OidcClient,
+    pub ping_client: pings::PingClient,
+    pub sync_interval_minutes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1155,7 +1154,18 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     if let Ok(stale) = db::get_stale_requests(&db_pool).await {
         for sr in &stale {
-            let _ = pings::send_stale_ping(&sr.username, &sr.title).await;
+            if let Err(e) = app_state
+                .ping_client
+                .send_stale_ping(&sr.username, &sr.title)
+                .await
+            {
+                tracing::error!(
+                    "Failed to send stale ping to user {} for {}: {:?}",
+                    sr.username,
+                    sr.title,
+                    e
+                );
+            }
         }
         if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
             if deleted > 0 {
@@ -1217,13 +1227,18 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     let server_names = db::get_server_names_for_guid(&db_pool, &req.guid)
                         .await
                         .unwrap_or_default();
-                    let _ = pings::send_fulfilled_ping(
-                        &req.username,
-                        &req.title,
-                        resolution,
-                        &server_names,
-                    )
-                    .await;
+                    if let Err(e) = app_state
+                        .ping_client
+                        .send_fulfilled_ping(&req.username, &req.title, resolution, &server_names)
+                        .await
+                    {
+                        tracing::error!(
+                            "Failed to send fulfilled ping to {} for {}: {:?}",
+                            req.username,
+                            req.title,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1247,12 +1262,16 @@ async fn database_sync_scheduler(app_state: web::Data<AppState>) {
     tracing::info!("Service started. Performing initial database sync...");
     run_database_sync(&app_state).await;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(60 * SYNC_INTERVAL_MINUTES));
+    let mut interval =
+        tokio::time::interval(Duration::from_secs(60 * app_state.sync_interval_minutes));
 
     interval.tick().await;
 
     loop {
-        tracing::info!("Next scheduled sync in {} minutes.", SYNC_INTERVAL_MINUTES);
+        tracing::info!(
+            "Next scheduled sync in {} minutes.",
+            app_state.sync_interval_minutes
+        );
         interval.tick().await;
         run_database_sync(&app_state).await;
     }
@@ -1276,13 +1295,28 @@ async fn main() -> std::io::Result<()> {
 
     tracing::info!("Postgres connected.");
 
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await
-        .expect("Migration failed");
-    tracing::info!("Database schema is up to date.");
+    if let Err(e) = sqlx::migrate!("./migrations").run(&db_pool).await {
+        tracing::warn!(
+            "Database migration step failed at startup: {:?}. Continuing because migrations are managed via `cargo sqlx migrate`.",
+            e
+        );
+    } else {
+        tracing::info!("Database schema is up to date.");
+    }
 
     let oidc_client = oidc_client::OidcClient::new();
+
+    let sync_interval_minutes = std::env::var("SYNC_INTERVAL_MINUTES")
+        .unwrap_or_else(|_| "90".to_string())
+        .parse()
+        .unwrap_or(90);
+
+    let pings_token = std::env::var("PINGS_TOKEN").unwrap_or_default();
+    let pings_request_route = std::env::var("PINGS_REQUEST_ROUTE").unwrap_or_default();
+    let pings_status_route = std::env::var("PINGS_STATUS_ROUTE").unwrap_or_default();
+
+    let ping_client = pings::PingClient::new(pings_token, pings_request_route, pings_status_route)
+        .expect("Failed to initialize PingClient");
 
     let app_state = web::Data::new(AppState {
         plex_client: PlexClient::new(),
@@ -1294,6 +1328,8 @@ async fn main() -> std::io::Result<()> {
             .build(),
         sync_semaphore: Arc::new(Semaphore::new(5)),
         oidc_client,
+        ping_client,
+        sync_interval_minutes,
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));
