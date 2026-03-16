@@ -347,10 +347,9 @@ pub async fn upsert_items_batch(
     let guids: Vec<Option<String>> = items
         .iter()
         .map(|i| match &i.item.guid {
-            Some(g) if g.starts_with("plex://") => {
-                Some(g.strip_prefix("plex://").unwrap().to_string())
-            }
-            _ => Some(format!("local-{}-{}", i.server_id, i.item.rating_key)),
+            Some(g) if g.starts_with("local-") => Some(g.clone()),
+            Some(g) => Some(g.rsplit('/').next().unwrap_or(g).to_string()),
+            None => Some(format!("local-{}-{}", i.server_id, i.item.rating_key)),
         })
         .collect();
     let indices: Vec<Option<i32>> = items.iter().map(|i| i.item.index).collect();
@@ -660,6 +659,7 @@ pub async fn get_details_by_guid(
     pool: &PgPool,
     guid: &str,
 ) -> Result<Option<MediaDetails>, sqlx::Error> {
+    let normalized = guid_for_item_lookup(guid);
     let items = sqlx::query_as!(
         ItemByGuid,
         r#"
@@ -668,7 +668,7 @@ pub async fn get_details_by_guid(
         JOIN servers s ON i.server_id = s.id
         WHERE i.guid = $1
         "#,
-        guid
+        normalized
     )
     .fetch_all(pool)
     .await?;
@@ -886,9 +886,10 @@ pub async fn get_season_episodes(
 
 /// Check if an item exists in the catalog using its guid.
 pub async fn item_exists_by_guid(pool: &PgPool, guid: &str) -> Result<bool, sqlx::Error> {
+    let normalized = guid_for_item_lookup(guid);
     let exists = sqlx::query_scalar!(
         r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1) AS "exists!""#,
-        guid
+        normalized
     )
     .fetch_one(pool)
     .await?;
@@ -988,7 +989,7 @@ pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::
                 SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])
                 FROM items i
                 JOIN servers s ON i.server_id = s.id
-                WHERE i.guid = REPLACE(mr.guid, 'plex://', '')
+                WHERE i.guid = mr.guid
             ) as "server_names: Vec<String>"
         FROM media_requests mr
         ORDER BY
@@ -1068,7 +1069,7 @@ pub async fn get_server_names_for_guid(
     pool: &PgPool,
     guid: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let normalized = guid.strip_prefix("plex://").unwrap_or(guid);
+    let normalized = guid_for_item_lookup(guid);
     let rows = sqlx::query_scalar!(
         "SELECT DISTINCT s.name FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = $1",
         normalized
@@ -1100,9 +1101,8 @@ pub async fn get_stale_requests(pool: &PgPool) -> Result<Vec<StaleRequest>, sqlx
     Ok(rows)
 }
 
-/// Strips the plex:// prefix from the guid to match against items table.
 fn guid_for_item_lookup(guid: &str) -> &str {
-    guid.strip_prefix("plex://").unwrap_or(guid)
+    guid.rsplit('/').next().unwrap_or(guid)
 }
 
 /// Check if a movie request is fulfilled in the local items table.
@@ -1118,7 +1118,11 @@ pub async fn is_movie_request_fulfilled(
 
     if !is_upgrade {
         let exists = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'movie') AS "exists!""#,
+            r#"SELECT EXISTS(
+                SELECT 1 FROM items
+                WHERE guid = $1
+                  AND item_type = 'movie'
+            ) AS "exists!""#,
             normalized_guid
         )
         .fetch_one(pool)
@@ -1128,7 +1132,11 @@ pub async fn is_movie_request_fulfilled(
 
     if requested_resolution.is_none() {
         let exists = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'movie') AS "exists!""#,
+            r#"SELECT EXISTS(
+                SELECT 1 FROM items
+                WHERE guid = $1
+                  AND item_type = 'movie'
+            ) AS "exists!""#,
             normalized_guid
         )
         .fetch_one(pool)
@@ -1146,8 +1154,9 @@ pub async fn is_movie_request_fulfilled(
                 SELECT EXISTS(
                     SELECT 1 FROM items i
                     JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-                    WHERE i.guid = $1 AND i.item_type = 'movie'
-                    AND mp.video_resolution ILIKE $2
+                    WHERE i.guid = $1
+                      AND i.item_type = 'movie'
+                      AND mp.video_resolution ILIKE $2
                 ) AS "exists!"
                 "#,
                 normalized_guid,
@@ -1163,8 +1172,9 @@ pub async fn is_movie_request_fulfilled(
         SELECT EXISTS(
             SELECT 1 FROM items i
             JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-            WHERE i.guid = $1 AND i.item_type = 'movie'
-            AND (mp.video_resolution ILIKE $2 OR mp.video_resolution ILIKE '%2160%')
+            WHERE i.guid = $1
+              AND i.item_type = 'movie'
+              AND (mp.video_resolution ILIKE $2 OR mp.video_resolution ILIKE '%2160%')
         ) AS "exists!"
         "#,
         normalized_guid,
@@ -1188,7 +1198,11 @@ pub async fn is_show_request_fulfilled(
 ) -> Result<bool, sqlx::Error> {
     let normalized_guid = guid_for_item_lookup(guid);
     let show_exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'show') AS "exists!""#,
+        r#"SELECT EXISTS(
+            SELECT 1 FROM items
+            WHERE guid = $1
+              AND item_type = 'show'
+        ) AS "exists!""#,
         normalized_guid
     )
     .fetch_one(pool)

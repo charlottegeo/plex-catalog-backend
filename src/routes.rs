@@ -338,12 +338,15 @@ async fn create_request_handler(
         .get::<User>()
         .map(|u| u.preferred_username.clone())
         .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
-    let payload = payload.into_inner();
-    let guid_for_check = payload
+    let mut payload = payload.into_inner();
+    payload.guid = payload
         .guid
-        .strip_prefix("plex://")
-        .unwrap_or(&payload.guid);
-    let is_upgrade = db::item_exists_by_guid(&state.db_pool, guid_for_check).await?;
+        .rsplit('/')
+        .next()
+        .unwrap_or(&payload.guid)
+        .to_string();
+
+    let is_upgrade = db::item_exists_by_guid(&state.db_pool, &payload.guid).await?;
     let request =
         db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
 

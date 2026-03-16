@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,\n            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,\n            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n            (\n                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])\n                FROM items i\n                JOIN servers s ON i.server_id = s.id\n                WHERE i.guid = REPLACE(mr.guid, 'plex://', '')\n            ) as \"server_names: Vec<String>\"\n        FROM media_requests mr\n        ORDER BY\n            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,\n            mr.created_at DESC\n        ",
+  "query": "\n        SELECT\n            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,\n            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,\n            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n            (\n                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])\n                FROM items i\n                JOIN servers s ON i.server_id = s.id\n                WHERE i.guid = mr.guid\n            ) as \"server_names: Vec<String>\"\n        FROM media_requests mr\n        ORDER BY\n            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,\n            mr.created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -106,5 +106,5 @@
       null
     ]
   },
-  "hash": "d78bd95a5ce5dd79c7e653677aacd25a1481c7fda62b8f4ad33fe99edd2a7ad2"
+  "hash": "828dc5534271f68ea7cc8ffb873561148abf65a78ee7cc339331823abfc2e416"
 }
