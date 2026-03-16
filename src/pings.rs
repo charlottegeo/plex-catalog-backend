@@ -101,7 +101,7 @@ pub async fn send_fulfilled_ping(
     };
 
     let body = format!(
-        "Your request for {} has been fulfilled at {}. It is now available on: {}.",
+        "Your request for {} was fulfilled with resolution {} and is now available on: {}.",
         title.into(),
         resolution_str,
         server_list

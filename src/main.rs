@@ -21,7 +21,7 @@ mod pings;
 mod plex_client;
 mod routes;
 
-/// Adds Bearer (JWT) security scheme so Swagger UI can use the Authorize button for CSH authentication.
+/// Adds Bearer (JWT) security scheme for Swagger UI.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -31,7 +31,7 @@ impl Modify for SecurityAddon {
                 .scheme(HttpAuthScheme::Bearer)
                 .bearer_format("JWT")
                 .description(Some(
-                    "Keycloak JWT token (CSHAuth). Use the token from your SSO login.",
+                    "Keycloak JWT token, use CSH SSO login to get token.",
                 ))
                 .build(),
         );
