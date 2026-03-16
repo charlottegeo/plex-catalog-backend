@@ -1151,6 +1151,8 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
     }
 
+    tracing::info!("Checking for stale or fulfilled media requests...");
+
     if let Ok(stale) = db::get_stale_requests(&db_pool).await {
         for sr in &stale {
             let _ = pings::send_stale_ping(&sr.username, &sr.title).await;
@@ -1168,6 +1170,12 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     }
 
     if let Ok(pending) = db::get_pending_requests(&db_pool).await {
+        if pending.is_empty() {
+            tracing::info!("No pending media requests to evaluate.");
+        } else {
+            tracing::info!("Evaluating {} pending media requests...", pending.len());
+        }
+
         for req in pending {
             let fulfilled = match req.item_type.as_str() {
                 "movie" => {
