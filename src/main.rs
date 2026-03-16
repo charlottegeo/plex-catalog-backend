@@ -15,12 +15,11 @@ use utoipa::{Modify, OpenApi};
 mod auth;
 mod db;
 mod error;
-mod ldap;
 mod models;
+mod oidc_client;
 mod pings;
 mod plex_client;
 mod routes;
-use crate::ldap::LdapClient;
 
 /// Adds Bearer (JWT) security scheme so Swagger UI can use the Authorize button for CSH authentication.
 struct SecurityAddon;
@@ -113,7 +112,7 @@ pub struct AppState {
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, CachedImage>,
     pub sync_semaphore: Arc<Semaphore>,
-    pub ldap_client: LdapClient,
+    pub oidc_client: oidc_client::OidcClient,
 }
 
 #[derive(Debug, Clone)]
@@ -1275,9 +1274,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Migration failed");
     tracing::info!("Database schema is up to date.");
 
-    let ldap_bind_dn = std::env::var("LDAP_BIND_DN").expect("LDAP_BIND_DN must be set");
-    let ldap_bind_pw = std::env::var("LDAP_BIND_PW").expect("LDAP_BIND_PW must be set");
-    let ldap_client = LdapClient::new(&ldap_bind_dn, &ldap_bind_pw).await;
+    let oidc_client = oidc_client::OidcClient::new();
 
     let app_state = web::Data::new(AppState {
         plex_client: PlexClient::new(),
@@ -1288,7 +1285,7 @@ async fn main() -> std::io::Result<()> {
             .time_to_live(Duration::from_secs(12 * 60 * 60))
             .build(),
         sync_semaphore: Arc::new(Semaphore::new(5)),
-        ldap_client,
+        oidc_client,
     });
 
     tokio::spawn(database_sync_scheduler(app_state.clone()));

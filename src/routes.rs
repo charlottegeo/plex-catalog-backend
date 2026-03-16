@@ -370,7 +370,7 @@ async fn create_request_handler(
         }
 
         for owner in unique_owners {
-            match state.ldap_client.get_csh_uid_by_plex(&owner).await {
+            match state.oidc_client.get_csh_uid_by_plex(&owner).await {
                 Ok(Some(csh_uid)) => {
                     tracing::info!(
                         "{} owns the server for {}",
@@ -380,7 +380,7 @@ async fn create_request_handler(
                     // TODO: Replace print with pings
                 }
                 Ok(None) => tracing::info!("No CSH user found for Plex user '{}'", owner),
-                Err(e) => tracing::error!("LDAP Error when looking up '{}': {}", owner, e),
+                Err(e) => tracing::error!("OIDC Error looking up '{}': {}", owner, e),
             }
         }
     }
