@@ -40,7 +40,7 @@ impl OidcClient {
         }
     }
 
-    async fn get_token(&self) -> Result<String, reqwest::Error> {
+    async fn get_token(&self) -> Result<String, Box<dyn std::error::Error>> {
         {
             let cache = self.token_cache.read().await;
             if let Some((token, expiry)) = &*cache {
@@ -55,19 +55,21 @@ impl OidcClient {
             self.authority.trim_end_matches('/')
         );
 
-        let params = [
-            ("grant_type", "client_credentials"),
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-        ];
+        let params = [("grant_type", "client_credentials")];
 
         let res = self
             .http_client
             .post(&token_url)
+            .basic_auth(&self.client_id, Some(&self.client_secret))
             .form(&params)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let error_text = res.text().await.unwrap_or_default();
+            return Err(format!("Token Error ({}): {}", status, error_text).into());
+        }
 
         let data: TokenResponse = res.json().await?;
 
