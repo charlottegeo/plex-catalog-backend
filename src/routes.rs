@@ -415,12 +415,91 @@ async fn create_request_handler(
         .map(|u| u.preferred_username.clone())
         .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
     let mut payload = payload.into_inner();
+    let discover_guid = payload.guid.clone();
     payload.guid = payload
         .guid
         .rsplit('/')
         .next()
         .unwrap_or(&payload.guid)
         .to_string();
+
+    if payload.item_type == "show" {
+        if let Some(requested_seasons) = payload.requested_seasons.as_ref() {
+            if !requested_seasons.is_empty() {
+                let discover_data = state
+                    .plex_client
+                    .get_discover_item_by_guid(&discover_guid)
+                    .await
+                    .map_err(|e| {
+                        ApiError::NotFound(format!(
+                            "Unable to validate requested seasons against Plex Discover: {}",
+                            e
+                        ))
+                    })?;
+
+                let show = discover_data
+                    .get("MediaContainer")
+                    .and_then(|mc| mc.get("Metadata"))
+                    .and_then(|m| m.as_array())
+                    .and_then(|arr| arr.first())
+                    .ok_or_else(|| {
+                        ApiError::NotFound(
+                            "Unable to validate requested seasons: Discover response missing metadata"
+                                .to_string(),
+                        )
+                    })?;
+
+                let mut max_season: i32 = 0;
+
+                if let Some(children) = show
+                    .get("Children")
+                    .and_then(|c| c.get("Metadata"))
+                    .and_then(|m| m.as_array())
+                {
+                    for child in children {
+                        let is_season = child
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .map(|t| t == "season")
+                            .unwrap_or(true);
+                        if !is_season {
+                            continue;
+                        }
+
+                        if let Some(index) = child.get("index").and_then(|i| i.as_i64()) {
+                            if index > max_season as i64 {
+                                max_season = index as i32;
+                            }
+                        }
+                    }
+                }
+
+                if max_season == 0 {
+                    if let Some(child_count) = show.get("childCount").and_then(|c| c.as_i64()) {
+                        if child_count > 0 {
+                            max_season = child_count as i32;
+                        }
+                    }
+                }
+
+                if max_season <= 0 {
+                    return Err(ApiError::NotFound(
+                        "Unable to validate requested seasons: Discover did not provide a season count"
+                            .to_string(),
+                    ));
+                }
+
+                for &season_num in requested_seasons {
+                    if season_num <= 0 || season_num > max_season {
+                        return Err(ApiError::NotFound(format!(
+                            "Invalid request: Season {} does not exist. This show only has {} season(s).",
+                            season_num, max_season
+                        )));
+                    }
+                }
+            }
+        }
+    }
 
     let is_upgrade = db::item_exists_by_guid(&state.db_pool, &payload.guid).await?;
     let request =

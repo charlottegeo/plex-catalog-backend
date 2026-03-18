@@ -1187,7 +1187,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         }
 
         for req in pending {
-            let fulfilled = match req.item_type.as_str() {
+            let fulfilled_resolution = match req.item_type.as_str() {
                 "movie" => {
                     db::is_movie_request_fulfilled(
                         &db_pool,
@@ -1207,10 +1207,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     )
                     .await
                 }
-                _ => Ok(false),
+                _ => Ok(None),
             };
 
-            if let Ok(true) = fulfilled {
+            if let Ok(Some(actual_res)) = fulfilled_resolution {
                 if let Err(e) = db::mark_request_fulfilled(&db_pool, req.id).await {
                     tracing::warn!("Failed to mark request {} as fulfilled: {:?}", req.id, e);
                 } else {
@@ -1220,16 +1220,28 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                         req.id,
                         req.username
                     );
-                    let resolution = req
+                    let resolution = if let Some(req_res) = req
                         .requested_resolution
                         .as_deref()
-                        .unwrap_or("any resolution");
+                        .filter(|r| !r.trim().is_empty())
+                    {
+                        if actual_res.trim() != req_res.trim() {
+                            format!(
+                                "{} (You requested {} — feel free to submit an upgrade request if you still want this resolution!)",
+                                actual_res, req_res
+                            )
+                        } else {
+                            actual_res
+                        }
+                    } else {
+                        actual_res
+                    };
                     let server_names = db::get_server_names_for_guid(&db_pool, &req.guid)
                         .await
                         .unwrap_or_default();
                     if let Err(e) = app_state
                         .ping_client
-                        .send_fulfilled_ping(&req.username, &req.title, resolution, &server_names)
+                        .send_fulfilled_ping(&req.username, &req.title, &resolution, &server_names)
                         .await
                     {
                         tracing::error!(

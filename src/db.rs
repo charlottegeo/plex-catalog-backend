@@ -1112,15 +1112,15 @@ fn guid_for_item_lookup(guid: &str) -> &str {
     guid.rsplit('/').next().unwrap_or(guid)
 }
 
-/// Check if a movie request is fulfilled in the local items table.
+/// Check if a movie request is fulfilled in the database.
 /// If is_upgrade = false (new media): fulfill as soon as any resolution exists.
-/// If is_upgrade = true (upgrade existing): only fulfill when requested_resolution matches.
+/// If is_upgrade = true (upgrade): only fulfill when the resolution matches the requested resolution.
 pub async fn is_movie_request_fulfilled(
     pool: &PgPool,
     guid: &str,
     requested_resolution: Option<&str>,
     is_upgrade: bool,
-) -> Result<bool, sqlx::Error> {
+) -> Result<Option<String>, sqlx::Error> {
     let normalized_guid = guid_for_item_lookup(guid);
 
     if !is_upgrade {
@@ -1134,75 +1134,97 @@ pub async fn is_movie_request_fulfilled(
         )
         .fetch_one(pool)
         .await?;
-        return Ok(exists);
-    }
 
-    if requested_resolution.is_none() {
-        let exists = sqlx::query_scalar!(
-            r#"SELECT EXISTS(
-                SELECT 1 FROM items
-                WHERE guid = $1
-                  AND item_type = 'movie'
-            ) AS "exists!""#,
-            normalized_guid
-        )
-        .fetch_one(pool)
-        .await?;
-        return Ok(exists);
-    }
-
-    let resolution_pattern = match requested_resolution.unwrap().to_lowercase().as_str() {
-        "4k" | "2160p" => "%4k%",
-        "1080p" | "1080" => "%1080%",
-        "720p" | "720" => "%720%",
-        r => {
-            return Ok(sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM items i
-                    JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-                    WHERE i.guid = $1
-                      AND i.item_type = 'movie'
-                      AND mp.video_resolution ILIKE $2
-                ) AS "exists!"
-                "#,
-                normalized_guid,
-                format!("%{}%", r)
-            )
-            .fetch_one(pool)
-            .await?);
+        if !exists {
+            return Ok(None);
         }
-    };
 
-    let exists = sqlx::query_scalar!(
-        r#"
-        SELECT EXISTS(
-            SELECT 1 FROM items i
+        let res = sqlx::query_scalar!(
+            r#"
+            SELECT mp.video_resolution as "res?"
+            FROM items i
             JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
             WHERE i.guid = $1
               AND i.item_type = 'movie'
-              AND (mp.video_resolution ILIKE $2 OR mp.video_resolution ILIKE '%2160%')
-        ) AS "exists!"
+              AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+            "#,
+            normalized_guid
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+
+        return Ok(Some(res.unwrap_or_else(|| "Unknown".to_string())));
+    }
+
+    if requested_resolution.is_none() {
+        let res = sqlx::query_scalar!(
+            r#"
+            SELECT mp.video_resolution as "res?"
+            FROM items i
+            JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
+            WHERE i.guid = $1
+              AND i.item_type = 'movie'
+              AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+            "#,
+            normalized_guid
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+
+        return Ok(res);
+    }
+
+    let resolution_pattern = match requested_resolution.unwrap().to_lowercase().as_str() {
+        "4k" | "2160p" => "%4k%".to_string(),
+        "1080p" | "1080" => "%1080%".to_string(),
+        "720p" | "720" => "%720%".to_string(),
+        r => format!("%{}%", r),
+    };
+
+    let res = sqlx::query_scalar!(
+        r#"
+        SELECT mp.video_resolution as "res?"
+        FROM items i
+        JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
+        WHERE i.guid = $1
+          AND i.item_type = 'movie'
+          AND (
+            mp.video_resolution ILIKE $2
+            OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
+          )
+          AND mp.video_resolution IS NOT NULL
+        GROUP BY mp.video_resolution
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
         "#,
         normalized_guid,
         resolution_pattern
     )
-    .fetch_one(pool)
-    .await?;
+    .fetch_optional(pool)
+    .await?
+    .flatten();
 
-    Ok(exists)
+    Ok(res)
 }
 
-/// Check if a TV show request is fulfilled: show exists, requested seasons exist, and resolution if specified.
-/// If is_upgrade = false (new media): verify show + seasons exist, IGNORE resolution.
-/// If is_upgrade = true (upgrade existing): check resolution on episodes.
+/// Check if a TV show request is fulfilled in the database.
+/// If is_upgrade = false (new media): verify show + seasons exist, ignore resolution.
+/// If is_upgrade = true (upgrade): check resolution on episodes.
 pub async fn is_show_request_fulfilled(
     pool: &PgPool,
     guid: &str,
     requested_seasons: Option<&[i32]>,
     requested_resolution: Option<&str>,
     is_upgrade: bool,
-) -> Result<bool, sqlx::Error> {
+) -> Result<Option<String>, sqlx::Error> {
     let normalized_guid = guid_for_item_lookup(guid);
     let show_exists = sqlx::query_scalar!(
         r#"SELECT EXISTS(
@@ -1216,13 +1238,46 @@ pub async fn is_show_request_fulfilled(
     .await?;
 
     if !show_exists {
-        return Ok(false);
+        return Ok(None);
     }
 
     if !is_upgrade {
         let seasons = match requested_seasons {
             Some(s) if !s.is_empty() => s,
-            _ => return Ok(true),
+            _ => {
+                let res = sqlx::query_scalar!(
+                    r#"
+                    SELECT mp.video_resolution as "res?"
+                    FROM items show
+                    JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
+                      AND (
+                        ep.parent_id = show.id
+                        OR EXISTS (
+                          SELECT 1 FROM items s
+                          WHERE s.id = ep.parent_id
+                            AND s.parent_id = show.id
+                            AND s.server_id = show.server_id
+                            AND s.item_type = 'season'
+                        )
+                      )
+                    JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+                    WHERE show.guid = $1 AND show.item_type = 'show'
+                      AND mp.video_resolution IS NOT NULL
+                    GROUP BY mp.video_resolution
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 2
+                    "#,
+                    normalized_guid
+                )
+                .fetch_all(pool)
+                .await?;
+
+                return Ok(match res.len() {
+                    0 => Some("Unknown".to_string()),
+                    1 => res[0].clone().or(Some("Unknown".to_string())),
+                    _ => Some("Mixed".to_string()),
+                });
+            }
         };
         for &season_num in seasons.iter() {
             let season_exists = sqlx::query_scalar!(
@@ -1255,64 +1310,51 @@ pub async fn is_show_request_fulfilled(
                 .fetch_one(pool)
                 .await?;
                 if !(direct_episodes && season_num == 1) {
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
         }
-        return Ok(true);
+
+        let res = sqlx::query_scalar!(
+            r#"
+            SELECT mp.video_resolution as "res?"
+            FROM items show
+            JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+              AND season.item_type = 'season'
+            JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id
+              AND ep.item_type = 'episode'
+            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+            WHERE show.guid = $1 AND show.item_type = 'show'
+              AND season.index = ANY($2)
+              AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution
+            ORDER BY COUNT(*) DESC
+            LIMIT 2
+            "#,
+            normalized_guid,
+            seasons
+        )
+        .fetch_all(pool)
+        .await?;
+
+        return Ok(match res.len() {
+            0 => Some("Unknown".to_string()),
+            1 => res[0].clone().or(Some("Unknown".to_string())),
+            _ => Some("Mixed".to_string()),
+        });
     }
 
-    // Check resolution on episodes
+    let Some(req_res) = requested_resolution.filter(|r| !r.trim().is_empty()) else {
+        return Ok(None);
+    };
     let seasons = match requested_seasons {
         Some(s) if !s.is_empty() => s,
-        _ => {
-            return if requested_resolution.is_some() {
-                let resolution_pattern = resolution_pattern_for(requested_resolution.unwrap());
-                let exists = sqlx::query_scalar!(
-                    r#"
-                    SELECT EXISTS(
-                        SELECT 1 FROM items show
-                        JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
-                        AND (ep.parent_id = show.id OR EXISTS (SELECT 1 FROM items s WHERE s.id = ep.parent_id AND s.parent_id = show.id AND s.server_id = show.server_id AND s.item_type = 'season'))
-                        JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-                        WHERE show.guid = $1 AND show.item_type = 'show'
-                        AND mp.video_resolution ILIKE $2
-                    ) AS "exists!"
-                    "#,
-                    normalized_guid,
-                    resolution_pattern
-                )
-                .fetch_one(pool)
-                .await?;
-                Ok(exists)
-            } else {
-                Ok(true)
-            };
-        }
+        _ => &[],
     };
-    for &season_num in seasons.iter() {
-        let season_exists = if let Some(res) = requested_resolution {
-            let resolution_pattern = resolution_pattern_for(res);
-            sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM items show
-                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
-                        AND season.item_type = 'season' AND season.index = $2
-                    JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id AND ep.item_type = 'episode'
-                    JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-                    WHERE show.guid = $1 AND show.item_type = 'show'
-                    AND mp.video_resolution ILIKE $3
-                ) AS "exists!"
-                "#,
-                normalized_guid,
-                season_num,
-                resolution_pattern
-            )
-            .fetch_one(pool)
-            .await?
-        } else {
-            sqlx::query_scalar!(
+
+    if !seasons.is_empty() {
+        for &season_num in seasons.iter() {
+            let season_exists = sqlx::query_scalar!(
                 r#"
                 SELECT EXISTS(
                     SELECT 1 FROM items show
@@ -1325,61 +1367,98 @@ pub async fn is_show_request_fulfilled(
                 season_num
             )
             .fetch_one(pool)
-            .await?
-        };
-
-        if !season_exists {
-            let direct_episodes = sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM items show
-                    JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
-                        AND ep.item_type = 'episode'
-                    WHERE show.guid = $1 AND show.item_type = 'show'
-                    AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
-                ) AS "exists!"
-                "#,
-                normalized_guid
-            )
-            .fetch_one(pool)
             .await?;
-
-            if direct_episodes && season_num == 1 {
-                if requested_resolution.is_some() {
-                    let resolution_pattern = resolution_pattern_for(requested_resolution.unwrap());
-                    let has_res = sqlx::query_scalar!(
-                        r#"
-                        SELECT EXISTS(
-                            SELECT 1 FROM items show
-                            JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id AND ep.item_type = 'episode'
-                            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-                            WHERE show.guid = $1 AND show.item_type = 'show'
-                            AND mp.video_resolution ILIKE $2
-                        ) AS "exists!"
-                        "#,
-                        normalized_guid,
-                        resolution_pattern
-                    )
-                    .fetch_one(pool)
-                    .await?;
-                    if !has_res {
-                        return Ok(false);
-                    }
+            if !season_exists {
+                let direct_episodes = sqlx::query_scalar!(
+                    r#"
+                    SELECT EXISTS(
+                        SELECT 1 FROM items show
+                        JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
+                            AND ep.item_type = 'episode'
+                        WHERE show.guid = $1 AND show.item_type = 'show'
+                        AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
+                    ) AS "exists!"
+                    "#,
+                    normalized_guid
+                )
+                .fetch_one(pool)
+                .await?;
+                if !(direct_episodes && season_num == 1) {
+                    return Ok(None);
                 }
-            } else if !direct_episodes || season_num != 1 {
-                return Ok(false);
             }
         }
     }
 
-    Ok(true)
-}
+    let pattern = match req_res.to_lowercase().as_str() {
+        "4k" | "2160p" => "%4k%".to_string(),
+        "1080p" | "1080" => "%1080%".to_string(),
+        "720p" | "720" => "%720%".to_string(),
+        r => format!("%{}%", r),
+    };
 
-fn resolution_pattern_for(res: &str) -> &'static str {
-    match res.to_lowercase().as_str() {
-        "4k" | "2160p" => "%4k%",
-        "1080p" | "1080" => "%1080%",
-        "720p" | "720" => "%720%",
-        _ => "%",
+    if !seasons.is_empty() {
+        let res = sqlx::query_scalar!(
+            r#"
+            SELECT mp.video_resolution as "res?"
+            FROM items show
+            JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+              AND season.item_type = 'season'
+            JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id
+              AND ep.item_type = 'episode'
+            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+            WHERE show.guid = $1 AND show.item_type = 'show'
+              AND season.index = ANY($2)
+              AND (
+                mp.video_resolution ILIKE $3
+                OR ($3 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
+              )
+              AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+            "#,
+            normalized_guid,
+            seasons,
+            pattern
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        Ok(res)
+    } else {
+        let res = sqlx::query_scalar!(
+            r#"
+            SELECT mp.video_resolution as "res?"
+            FROM items show
+            JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
+              AND (
+                ep.parent_id = show.id
+                OR EXISTS (
+                  SELECT 1 FROM items s
+                  WHERE s.id = ep.parent_id
+                    AND s.parent_id = show.id
+                    AND s.server_id = show.server_id
+                    AND s.item_type = 'season'
+                )
+              )
+            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
+            WHERE show.guid = $1 AND show.item_type = 'show'
+              AND (
+                mp.video_resolution ILIKE $2
+                OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
+              )
+              AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+            "#,
+            normalized_guid,
+            pattern
+        )
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        Ok(res)
     }
 }

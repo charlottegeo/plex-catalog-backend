@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT mp.video_resolution as \"res?\"\n        FROM items i\n        JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id\n        WHERE i.guid = $1\n          AND i.item_type = 'movie'\n          AND (\n            mp.video_resolution ILIKE $2\n            OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%')\n          )\n          AND mp.video_resolution IS NOT NULL\n        GROUP BY mp.video_resolution\n        ORDER BY COUNT(*) DESC\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "res?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "778f5de0b85a68e1fb9c9453b44d016d6aef2e1c19aae47df4ad4d047ddf57db"
+}
