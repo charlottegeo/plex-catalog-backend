@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            i.id as \"rating_key!\",\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT 50\n        ",
+  "query": "\n        SELECT\n            i.id as \"rating_key!\",\n            i.guid,\n            i.title, i.summary, i.item_type, i.year, i.thumb_path,\n            i.content_rating,\n            i.duration,\n            i.originally_available_at,\n            s.id as \"server_id!\",\n            s.name as \"server_name!\",\n            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank\n        FROM items i\n        JOIN servers s ON i.server_id = s.id\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ORDER BY rank DESC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -71,7 +71,9 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -90,5 +92,5 @@
       null
     ]
   },
-  "hash": "df50c500b25110b95947d4fa6e3d8cc4873a9cdd64f1eae672b7806060627f3e"
+  "hash": "70123f18b7907c9d74b165b28fcb7dccb5a0c85f2c8c46546bfedacfb6debba1"
 }
