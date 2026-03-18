@@ -416,6 +416,7 @@ impl PlexClient {
         self.http_client
             .get(url)
             .header("X-Plex-Token", token)
+            .header("X-Plex-Client-Identifier", &self.client_identifier)
             .send()
             .await?
             .error_for_status()

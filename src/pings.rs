@@ -45,7 +45,22 @@ impl PingClient {
         is_upgrade: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let year_str = year.map(|y| format!(" ({})", y)).unwrap_or_default();
-        let mut parts = vec![format!("{} requested {}{}.", requester, title, year_str)];
+        let requester = format!("@{}", requester);
+        let mut parts = if is_upgrade {
+            if let Some(res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
+                vec![format!(
+                    "{} requested an upgrade for {}{} in resolution {}.",
+                    requester, title, year_str, res
+                )]
+            } else {
+                vec![format!(
+                    "{} requested an upgrade for {}{}.",
+                    requester, title, year_str
+                )]
+            }
+        } else {
+            vec![format!("{} requested {}{}.", requester, title, year_str)]
+        };
 
         if item_type == "show" {
             if let Some(seasons) = requested_seasons {
@@ -56,13 +71,8 @@ impl PingClient {
             }
         }
 
-        if is_upgrade {
-            parts.push(format!(
-                "User is requesting a different resolution for an existing {}.",
-                item_type
-            ));
-        } else if let Some(res) = requested_resolution {
-            if !res.is_empty() {
+        if !is_upgrade {
+            if let Some(res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
                 parts.push(format!("Preferred resolution: {}.", res));
             }
         }
