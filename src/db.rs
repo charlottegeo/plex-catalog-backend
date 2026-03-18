@@ -1024,8 +1024,8 @@ pub async fn mark_request_fulfilled(pool: &PgPool, id: i32) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Delete stale/outdated requests: pending > 30 days by created_at, fulfilled > 30 days by updated_at.
-pub async fn delete_stale_requests(pool: &PgPool) -> Result<u64, sqlx::Error> {
+/// Delete expired/outdated requests: pending > 30 days by created_at, fulfilled > 30 days by updated_at.
+pub async fn delete_expired_requests(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result: sqlx::postgres::PgQueryResult = sqlx::query!(
         r#"
         DELETE FROM media_requests
@@ -1079,16 +1079,16 @@ pub async fn get_server_names_for_guid(
     Ok(rows)
 }
 
-/// Stale request info for pings before deletion.
-pub struct StaleRequest {
+/// Expired request info for pings before deletion.
+pub struct ExpiredRequest {
     pub username: String,
     pub title: String,
 }
 
-/// Fetch requests that will be deleted by delete_stale_requests (for pings).
-pub async fn get_stale_requests(pool: &PgPool) -> Result<Vec<StaleRequest>, sqlx::Error> {
+/// Fetch requests that will be deleted by delete_expired_requests (for pings).
+pub async fn get_expired_requests(pool: &PgPool) -> Result<Vec<ExpiredRequest>, sqlx::Error> {
     let rows = sqlx::query_as!(
-        StaleRequest,
+        ExpiredRequest,
         r#"
         SELECT username, title
         FROM media_requests

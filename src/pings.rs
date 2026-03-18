@@ -115,13 +115,13 @@ impl PingClient {
     }
 
     /// Notify a user that their unfulfilled request was removed after 30 days.
-    pub async fn send_stale_ping(
+    pub async fn send_expired_ping(
         &self,
         to: &str,
         title: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let body = format!(
-            "Your request for {} was unfulfilled for 30 days and has been removed.",
+            "Your request for {} was unfulfilled for 30 days and has expired. Still want it? Re-request it at plex.csh.rit.edu.",
             title
         );
 

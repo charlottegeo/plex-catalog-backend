@@ -1150,33 +1150,33 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         tracing::error!("Database Error: Data pruning failed: {:?}", e);
     }
 
-    tracing::info!("Checking for stale or fulfilled media requests...");
+    tracing::info!("Checking for expired or fulfilled media requests...");
 
-    if let Ok(stale) = db::get_stale_requests(&db_pool).await {
-        for sr in &stale {
+    if let Ok(expired) = db::get_expired_requests(&db_pool).await {
+        for er in &expired {
             if let Err(e) = app_state
                 .ping_client
-                .send_stale_ping(&sr.username, &sr.title)
+                .send_expired_ping(&er.username, &er.title)
                 .await
             {
                 tracing::error!(
-                    "Failed to send stale ping to user {} for {}: {:?}",
-                    sr.username,
-                    sr.title,
+                    "Failed to send expired ping to user {} for {}: {:?}",
+                    er.username,
+                    er.title,
                     e
                 );
             }
         }
-        if let Ok(deleted) = db::delete_stale_requests(&db_pool).await {
+        if let Ok(deleted) = db::delete_expired_requests(&db_pool).await {
             if deleted > 0 {
                 tracing::info!(
-                    "Deleted {} stale media requests (pending/fulfilled > 30 days)",
+                    "Deleted {} expired media requests (pending/fulfilled > 30 days)",
                     deleted
                 );
             }
         }
     } else {
-        tracing::warn!("Failed to fetch stale media requests");
+        tracing::warn!("Failed to fetch expired media requests");
     }
 
     if let Ok(pending) = db::get_pending_requests(&db_pool).await {
