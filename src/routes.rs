@@ -2,7 +2,9 @@ use crate::auth::{CSHAuth, User};
 use crate::{
     db,
     error::ApiError,
-    models::{DbServer, ImageQuery, MediaRequestPayload, NotificationCount, SearchQuery},
+    models::{
+        DbServer, GlobalImageQuery, ImageQuery, MediaRequestPayload, NotificationCount, SearchQuery,
+    },
     AppState,
 };
 use actix_web::{
@@ -30,8 +32,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_item_children_handler)
             .service(get_item_extras_handler)
             .service(get_image_handler)
+            .service(get_global_image_handler)
             .service(search_handler)
             .service(discover_handler)
+            .service(discover_item_handler)
             .service(create_request_handler)
             .service(get_all_requests_handler)
             .service(delete_request_handler)
@@ -264,7 +268,7 @@ async fn get_image_handler(
 
     let server_details = get_server_details_or_404(&state.db_pool, &server_id).await?;
     let client = &state.plex_client;
-    let image_response = client
+    let mut image_response = client
         .get_image(
             &server_details.connection_uri,
             &server_details.access_token,
@@ -272,7 +276,24 @@ async fn get_image_handler(
             width,
             height,
         )
-        .await?;
+        .await;
+
+    if image_response.is_err() && (width.is_some() || height.is_some()) {
+        tracing::warn!(
+            "Failed to fetch transcoded image, using original image for {}",
+            image_path
+        );
+        image_response = client
+            .get_image(
+                &server_details.connection_uri,
+                &server_details.access_token,
+                &image_path,
+                None,
+                None,
+            )
+            .await;
+    }
+    let image_response = image_response.map_err(ApiError::from)?;
 
     let content_type = image_response
         .headers()
@@ -298,13 +319,48 @@ async fn get_image_handler(
         .body(image_bytes))
 }
 
+/// Get an image from metadata.provider.plex.tv
+#[utoipa::path(
+    get,
+    path = "/api/image/global",
+    params(("url" = String, Query, description = "URL of the image to fetch")),
+    responses((status = 200, description = "Image binary (JPEG)"))
+)]
+#[get("/image/global")]
+async fn get_global_image_handler(
+    state: web::Data<AppState>,
+    query: web::Query<GlobalImageQuery>,
+) -> Result<impl Responder, ApiError> {
+    let response = state.plex_client.get_global_image(&query.url).await?;
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|val| val.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+
+    let image_bytes = response.bytes().await.map_err(ApiError::from)?;
+
+    Ok(HttpResponse::Ok()
+        .content_type(content_type)
+        .insert_header(header::CacheControl(vec![header::CacheDirective::MaxAge(
+            86400u32, //Caches for a day, might change later
+        )]))
+        .body(image_bytes))
+}
+
 /// Search Plex's global discover catalog for movies and TV shows.
 ///
 /// Uses the Plex account token to query metadata.provider.plex.tv.
 #[utoipa::path(
     get,
     path = "/api/discover",
-    params(("q" = String, Query, description = "Search query")),
+    params(
+        ("q" = String, Query, description = "Search query"),
+        ("limit" = Option<u32>, Query, description = "Max results to return"),
+        ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
+    ),
     responses((status = 200, description = "Search results from Plex discover", body = serde_json::Value))
 )]
 #[get("/discover")]
@@ -312,9 +368,30 @@ async fn discover_handler(
     state: web::Data<AppState>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, ApiError> {
-    let results = state.plex_client.search_global_discover(&query.q).await?;
+    let limit = query.limit.unwrap_or(30);
+    let offset = query.offset.unwrap_or(0);
+    let results = state
+        .plex_client
+        .search_global_discover(&query.q, limit, offset)
+        .await?;
 
     Ok(HttpResponse::Ok().json(results))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/discover/{guid}",
+    params(("guid" = String, Path, description = "Plex GUID of the item")),
+    responses((status = 200, description = "Item details from Discover", body = serde_json::Value))
+)]
+#[get("/discover/{guid:.*}")]
+async fn discover_item_handler(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> Result<impl Responder, ApiError> {
+    let guid = path.into_inner();
+    let result = state.plex_client.get_discover_item_by_guid(&guid).await?;
+    Ok(HttpResponse::Ok().json(result))
 }
 
 /// Create or update a media request.
@@ -478,7 +555,11 @@ async fn clear_notifications_handler(
 #[utoipa::path(
     get,
     path = "/api/search",
-    params(("q" = String, Query, description = "Search terms (full-text; multiple words supported)")),
+    params(
+        ("q" = String, Query, description = "Search terms (full-text; multiple words supported)"),
+        ("limit" = Option<u32>, Query, description = "Max results to return"),
+        ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
+    ),
     responses((status = 200, description = "Search results", body = Vec<SearchResult>))
 )]
 #[get("/search")]
@@ -486,7 +567,9 @@ async fn search_handler(
     state: web::Data<AppState>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, ApiError> {
-    let search_results = db::search_items(&state.db_pool, &query.q).await?;
+    let limit = query.limit.unwrap_or(50) as i64;
+    let offset = query.offset.unwrap_or(0) as i64;
+    let search_results = db::search_items(&state.db_pool, &query.q, limit, offset).await?;
     Ok(HttpResponse::Ok().json(search_results))
 }
 

@@ -274,12 +274,19 @@ pub struct SearchResult {
 #[derive(Deserialize, ToSchema)]
 pub struct SearchQuery {
     pub q: String,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct ImageQuery {
     pub width: Option<u32>,
     pub height: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct GlobalImageQuery {
+    pub url: String,
 }
 
 #[derive(Clone)]

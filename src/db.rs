@@ -611,7 +611,12 @@ pub async fn prune_old_data(
     Ok(())
 }
 
-pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult>, sqlx::Error> {
+pub async fn search_items(
+    pool: &PgPool,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<SearchResult>, sqlx::Error> {
     let fts_query = query
         .split_whitespace()
         .filter(|s| !s.is_empty())
@@ -638,9 +643,11 @@ pub async fn search_items(pool: &PgPool, query: &str) -> Result<Vec<SearchResult
             i.fts_document @@ to_tsquery('simple', $1)
             AND i.item_type IN ('movie', 'show')
         ORDER BY rank DESC
-        LIMIT 50
+        LIMIT $2 OFFSET $3
         "#,
-        fts_query
+        fts_query,
+        limit,
+        offset
     )
     .fetch_all(pool)
     .await

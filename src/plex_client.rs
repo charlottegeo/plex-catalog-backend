@@ -272,13 +272,17 @@ impl PlexClient {
     pub async fn search_global_discover(
         &self,
         query: &str,
+        limit: u32,
+        offset: u32,
     ) -> Result<serde_json::Value, reqwest::Error> {
         self.ensure_logged_in().await?;
         let token = self.auth_token.read().await.as_ref().unwrap().clone();
 
         let url = format!(
-            "https://discover.provider.plex.tv/library/search?query={}&limit=30&searchTypes=movies%2Ctv&searchProviders=discover%2CplexAVOD%2CplexTVOD&includeMetadata=1",
-            urlencoding::encode(query)
+            "https://discover.provider.plex.tv/library/search?query={}&limit={}&offset={}&searchTypes=movies%2Ctv&searchProviders=discover%2CplexAVOD%2CplexTVOD&includeMetadata=1",
+            urlencoding::encode(query),
+            limit,
+            offset
         );
 
         let response = self
@@ -343,6 +347,31 @@ impl PlexClient {
         }))
     }
 
+    pub async fn get_discover_item_by_guid(
+        &self,
+        guid: &str,
+    ) -> Result<serde_json::Value, reqwest::Error> {
+        self.ensure_logged_in().await?;
+        let token = self.auth_token.read().await.as_ref().unwrap().clone();
+
+        let url = format!(
+            "https://discover.provider.plex.tv/library/metadata/{}?includeChildren=1",
+            urlencoding::encode(guid)
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("X-Plex-Token", token)
+            .header("X-Plex-Client-Identifier", &self.client_identifier)
+            .send()
+            .await?;
+
+        let text_response = response.text().await?;
+        Ok(serde_json::from_str(&text_response).unwrap_or_else(|_| serde_json::json!({})))
+    }
+
     pub async fn get_image(
         &self,
         server_uri: &str,
@@ -375,6 +404,18 @@ impl PlexClient {
         self.http_client
             .get(url)
             .header("X-Plex-Token", server_token)
+            .send()
+            .await?
+            .error_for_status()
+    }
+
+    pub async fn get_global_image(&self, url: &str) -> Result<Response, reqwest::Error> {
+        self.ensure_logged_in().await?;
+        let token = self.auth_token.read().await.as_ref().unwrap().clone();
+
+        self.http_client
+            .get(url)
+            .header("X-Plex-Token", token)
             .send()
             .await?
             .error_for_status()
