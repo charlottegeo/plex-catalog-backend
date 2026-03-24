@@ -279,6 +279,12 @@ pub struct SearchQuery {
 }
 
 #[derive(Deserialize, ToSchema)]
+pub struct LibraryItemsQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Deserialize, ToSchema)]
 pub struct ImageQuery {
     pub width: Option<u32>,
     pub height: Option<u32>,

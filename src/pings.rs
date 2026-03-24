@@ -33,6 +33,7 @@ impl PingClient {
     }
 
     /// Notify a server owner that a user requested new media.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_request_ping(
         &self,
         to: &str,
@@ -65,7 +66,7 @@ impl PingClient {
         if item_type == "show" {
             if let Some(seasons) = requested_seasons {
                 if !seasons.is_empty() {
-                    let s: Vec<String> = seasons.iter().map(|n| n.to_string()).collect();
+                    let s: Vec<String> = seasons.iter().map(|n| format!("S{}", n)).collect();
                     parts.push(format!("Seasons: {}.", s.join(", ")));
                 }
             }

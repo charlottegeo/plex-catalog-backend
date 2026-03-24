@@ -3,7 +3,8 @@ use crate::{
     db,
     error::ApiError,
     models::{
-        DbServer, GlobalImageQuery, ImageQuery, MediaRequestPayload, NotificationCount, SearchQuery,
+        DbServer, GlobalImageQuery, ImageQuery, LibraryItemsQuery, MediaRequestPayload,
+        NotificationCount, SearchQuery,
     },
     AppState,
 };
@@ -105,7 +106,9 @@ async fn get_libraries_handler(
     path = "/api/servers/{server_id}/libraries/{library_key}",
     params(
         ("server_id" = String, Path, description = "Server ID (Plex client identifier)"),
-        ("library_key" = String, Path, description = "Library section key from /libraries")
+        ("library_key" = String, Path, description = "Library section key from /libraries"),
+        ("limit" = Option<u32>, Query, description = "Max results to return"),
+        ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
     responses(
         (status = 200, description = "List of library items", body = Vec<Item>),
@@ -116,9 +119,13 @@ async fn get_libraries_handler(
 async fn get_library_items_handler(
     state: web::Data<AppState>,
     path: web::Path<(String, String)>,
+    query: web::Query<LibraryItemsQuery>,
 ) -> Result<impl Responder, ApiError> {
     let (server_id, library_key) = path.into_inner();
-    let items = db::get_library_items(&state.db_pool, &server_id, &library_key).await?;
+    let limit = query.limit.unwrap_or(50) as i64;
+    let offset = query.offset.unwrap_or(0) as i64;
+    let items =
+        db::get_library_items(&state.db_pool, &server_id, &library_key, limit, offset).await?;
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -279,10 +286,6 @@ async fn get_image_handler(
         .await;
 
     if image_response.is_err() && (width.is_some() || height.is_some()) {
-        tracing::warn!(
-            "Failed to fetch transcoded image, using original image for {}",
-            image_path
-        );
         image_response = client
             .get_image(
                 &server_details.connection_uri,
@@ -331,7 +334,35 @@ async fn get_global_image_handler(
     state: web::Data<AppState>,
     query: web::Query<GlobalImageQuery>,
 ) -> Result<impl Responder, ApiError> {
-    let response = state.plex_client.get_global_image(&query.url).await?;
+    let parsed_url = match reqwest::Url::parse(&query.url) {
+        Ok(url) => url,
+        Err(_) => {
+            return Ok(HttpResponse::BadRequest().body("Invalid image URL"));
+        }
+    };
+
+    if parsed_url.scheme() != "https" && parsed_url.scheme() != "http" {
+        return Ok(HttpResponse::BadRequest().body("Invalid image URL scheme"));
+    }
+
+    let Some(host) = parsed_url.host_str() else {
+        return Ok(HttpResponse::BadRequest().body("Image URL is missing a host"));
+    };
+
+    if host != "metadata.provider.plex.tv" {
+        return Ok(
+            HttpResponse::BadRequest().body("Only metadata.provider.plex.tv URLs are allowed")
+        );
+    }
+
+    let response = match state
+        .plex_client
+        .get_global_image(parsed_url.as_ref())
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return Ok(HttpResponse::NotFound().body("Unable to fetch global image")),
+    };
 
     let content_type = response
         .headers()
@@ -340,7 +371,10 @@ async fn get_global_image_handler(
         .unwrap_or("image/jpeg")
         .to_string();
 
-    let image_bytes = response.bytes().await.map_err(ApiError::from)?;
+    let image_bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(HttpResponse::NotFound().body("Unable to fetch global image")),
+    };
 
     Ok(HttpResponse::Ok()
         .content_type(content_type)

@@ -19,6 +19,7 @@ mod models;
 mod oidc_client;
 mod pings;
 mod plex_client;
+mod resolution;
 mod routes;
 
 /// Adds Bearer (JWT) security scheme for Swagger UI.
@@ -115,6 +116,7 @@ pub struct AppState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 enum DiscoveryTask {
     SyncItem {
         item: Item,
@@ -129,6 +131,7 @@ enum DiscoveryTask {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 enum DetailTask {
     SyncItemDetails {
         item: Item,
@@ -193,6 +196,7 @@ async fn flush_item_buffer(
 
 /// Fetches extras from Plex for a parent item and upserts them into the database.
 /// Also fetches media details for each extra.
+#[allow(clippy::too_many_arguments)]
 async fn sync_extras_for_parent(
     plex_client: &crate::plex_client::PlexClient,
     db_pool: &sqlx::PgPool,
@@ -294,29 +298,27 @@ async fn process_media_parts(
             if db::upsert_media_part(db_pool, part, &item.rating_key, server_id, media, sync_time)
                 .await
                 .is_ok()
+                && !part.streams.is_empty()
             {
-                if !part.streams.is_empty() {
-                    stream::iter(&part.streams)
-                        .for_each_concurrent(2, |stream| {
-                            let db_p = db_pool.clone();
-                            let part_id = part.id;
-                            let s_id = server_id.to_string();
-                            async move {
-                                if let Err(e) =
-                                    db::upsert_stream(&db_p, stream, part_id, &s_id, sync_time)
-                                        .await
-                                {
-                                    tracing::error!(
-                                        "Database Error: Failed to upsert stream for part {}: {:?}",
-                                        part_id,
-                                        e
-                                    );
-                                }
+                stream::iter(&part.streams)
+                    .for_each_concurrent(2, |stream| {
+                        let db_p = db_pool.clone();
+                        let part_id = part.id;
+                        let s_id = server_id.to_string();
+                        async move {
+                            if let Err(e) =
+                                db::upsert_stream(&db_p, stream, part_id, &s_id, sync_time).await
+                            {
+                                tracing::error!(
+                                    "Database Error: Failed to upsert stream for part {}: {:?}",
+                                    part_id,
+                                    e
+                                );
                             }
-                        })
-                        .await;
-                    at_least_one_part_with_streams = true;
-                }
+                        }
+                    })
+                    .await;
+                at_least_one_part_with_streams = true;
             }
         }
     }
@@ -365,7 +367,7 @@ async fn process_discovery_task(
 
                 if let Err(e) = db::touch_items_batch(
                     &state.db_pool,
-                    &[item.rating_key.clone()],
+                    std::slice::from_ref(&item.rating_key),
                     &server_id,
                     sync_time,
                 )
@@ -932,7 +934,7 @@ async fn sync_server(
                             let force_scan = match item.updated_at {
                                 Some(ts) => existing_timestamps
                                     .get(&item.rating_key)
-                                    .map_or(true, |&old_ts| ts > old_ts),
+                                    .is_none_or(|&old_ts| ts > old_ts),
                                 None => true,
                             };
 
@@ -1225,9 +1227,9 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                         .as_deref()
                         .filter(|r| !r.trim().is_empty())
                     {
-                        if actual_res.trim() != req_res.trim() {
+                        if resolution::is_resolution_lower(&actual_res, req_res) {
                             format!(
-                                "{} (You requested {} — feel free to submit an upgrade request if you still want this resolution!)",
+                                "{} (You requested {} - submit an upgrade request if you still want this resolution.)",
                                 actual_res, req_res
                             )
                         } else {

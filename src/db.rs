@@ -162,6 +162,8 @@ pub async fn get_library_items(
     pool: &PgPool,
     server_id: &str,
     library_id: &str,
+    limit: i64,
+    offset: i64,
 ) -> Result<Vec<Item>, sqlx::Error> {
     sqlx::query(
         r#"
@@ -197,10 +199,13 @@ pub async fn get_library_items(
         FROM items i
         WHERE i.server_id = $1 AND i.library_id = $2 AND i.item_type IN ('movie', 'show')
         ORDER BY i.title ASC
+        LIMIT $3 OFFSET $4
         "#,
     )
     .bind(server_id)
     .bind(library_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?
     .into_iter()
@@ -326,24 +331,12 @@ pub async fn upsert_items_batch(
     let titles: Vec<String> = items.iter().map(|i| i.item.title.clone()).collect();
     let summaries: Vec<Option<String>> = items
         .iter()
-        .map(|i| {
-            i.item
-                .summary
-                .as_ref()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.clone())
-        })
+        .map(|i| i.item.summary.as_ref().filter(|s| !s.is_empty()).cloned())
         .collect();
     let item_types: Vec<String> = items.iter().map(|i| i.item.item_type.clone()).collect();
     let years: Vec<i16> = items.iter().map(|i| i.item.year as i16).collect();
-    let thumb_paths: Vec<Option<String>> = items
-        .iter()
-        .map(|i| i.item.thumb.as_ref().map(|s| s.clone()))
-        .collect();
-    let art_paths: Vec<Option<String>> = items
-        .iter()
-        .map(|i| i.item.art.as_ref().map(|s| s.clone()))
-        .collect();
+    let thumb_paths: Vec<Option<String>> = items.iter().map(|i| i.item.thumb.clone()).collect();
+    let art_paths: Vec<Option<String>> = items.iter().map(|i| i.item.art.clone()).collect();
     let guids: Vec<Option<String>> = items
         .iter()
         .map(|i| match &i.item.guid {
@@ -943,8 +936,8 @@ pub async fn create_or_update_request(
     .bind(&payload.requested_resolution)
     .bind(is_upgrade)
     .bind(&payload.thumb)
-    .bind(&payload.year)
-    .bind(&payload.duration)
+    .bind(payload.year)
+    .bind(payload.duration)
     .fetch_one(pool)
     .await?;
 
