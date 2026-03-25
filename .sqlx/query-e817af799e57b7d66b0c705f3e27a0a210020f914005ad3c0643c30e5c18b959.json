@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO media_requests (guid, title, item_type, requested_season, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration)\n            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, false, $8, $9)\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Bool",
+        "Text",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e817af799e57b7d66b0c705f3e27a0a210020f914005ad3c0643c30e5c18b959"
+}

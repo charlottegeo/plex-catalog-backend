@@ -36,7 +36,7 @@ impl PlexClient {
         if self.auth_token.read().await.is_some() {
             return Ok(());
         }
-        println!("PlexClient is not logged in. Authenticating...");
+        tracing::info!("PlexClient is not logged in. Authenticating...");
         let username = std::env::var("PLEX_USERNAME").expect("PLEX_USERNAME must be set");
         let password = std::env::var("PLEX_PASSWORD").expect("PLEX_PASSWORD must be set");
 
@@ -58,7 +58,7 @@ impl PlexClient {
         let mut token_lock = self.auth_token.write().await;
         *token_lock = Some(login_data.user.auth_token);
 
-        println!("Authentication successful!");
+        tracing::debug!("Authentication successful.");
         Ok(())
     }
 

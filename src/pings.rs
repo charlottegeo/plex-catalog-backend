@@ -47,21 +47,16 @@ impl PingClient {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let year_str = year.map(|y| format!(" ({})", y)).unwrap_or_default();
         let requester = format!("@{}", requester);
-        let mut parts = if is_upgrade {
-            if let Some(res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
-                vec![format!(
-                    "{} requested an upgrade for {}{} in resolution {}.",
-                    requester, title, year_str, res
-                )]
-            } else {
-                vec![format!(
-                    "{} requested an upgrade for {}{}.",
-                    requester, title, year_str
-                )]
-            }
+        let mut parts = vec![];
+
+        if is_upgrade {
+            parts.push(format!(
+                "{} requested an upgrade for {}{}.",
+                requester, title, year_str
+            ));
         } else {
-            vec![format!("{} requested {}{}.", requester, title, year_str)]
-        };
+            parts.push(format!("{} requested {}{}.", requester, title, year_str));
+        }
 
         if item_type == "show" {
             if let Some(seasons) = requested_seasons {
@@ -72,10 +67,8 @@ impl PingClient {
             }
         }
 
-        if !is_upgrade {
-            if let Some(res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
-                parts.push(format!("Preferred resolution: {}.", res));
-            }
+        if let Some(res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
+            parts.push(format!("Preferred resolution: {}.", res));
         }
 
         self.client
@@ -86,6 +79,26 @@ impl PingClient {
             .json(&json!({
                 "username": to,
                 "body": parts.join(" ")
+            }))
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// Notify a user that their request has been fulfilled.
+    pub async fn send_fulfilled_ping_body(
+        &self,
+        to: &str,
+        body: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.client
+            .post(format!(
+                "https://pings.csh.rit.edu/service/route/{}/ping",
+                self.status_route
+            ))
+            .json(&json!({
+                "username": to,
+                "body": body
             }))
             .send()
             .await?;
@@ -110,19 +123,7 @@ impl PingClient {
             "Your request for {} was fulfilled with resolution {} and is now available on: {}.",
             title, resolution, server_list
         );
-
-        self.client
-            .post(format!(
-                "https://pings.csh.rit.edu/service/route/{}/ping",
-                self.status_route
-            ))
-            .json(&json!({
-                "username": to,
-                "body": body
-            }))
-            .send()
-            .await?;
-        Ok(())
+        self.send_fulfilled_ping_body(to, &body).await
     }
 
     /// Notify a user that their unfulfilled request was removed after 30 days.

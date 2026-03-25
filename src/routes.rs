@@ -3,14 +3,15 @@ use crate::{
     db,
     error::ApiError,
     models::{
-        DbServer, GlobalImageQuery, ImageQuery, LibraryItemsQuery, MediaRequestPayload,
-        NotificationCount, SearchQuery,
+        DbServer, DiscoverResultsPage, GlobalImageQuery, ImageQuery, LibraryItemsPage,
+        LibraryItemsQuery, MediaRequestPayload, SearchQuery, SearchResultsPage,
     },
     AppState,
 };
 use actix_web::{
     delete, get, http::header, post, web, HttpMessage, HttpRequest, HttpResponse, Responder, Result,
 };
+use std::collections::HashSet;
 
 async fn get_server_details_or_404(
     db_pool: &sqlx::PgPool,
@@ -38,10 +39,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(discover_handler)
             .service(discover_item_handler)
             .service(create_request_handler)
+            .service(subscribe_request_handler)
             .service(get_all_requests_handler)
+            .service(get_active_requests_by_guid_handler)
             .service(delete_request_handler)
-            .service(get_notification_count_handler)
-            .service(clear_notifications_handler)
+            .service(unsubscribe_request_handler)
             .service(get_media_details_handler)
             .service(get_seasons_handler)
             .service(get_episodes_handler),
@@ -111,7 +113,7 @@ async fn get_libraries_handler(
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
     responses(
-        (status = 200, description = "List of library items", body = Vec<Item>),
+        (status = 200, description = "Paginated library items", body = LibraryItemsPage),
         (status = 404, description = "Server not found")
     )
 )]
@@ -124,9 +126,15 @@ async fn get_library_items_handler(
     let (server_id, library_key) = path.into_inner();
     let limit = query.limit.unwrap_or(50) as i64;
     let offset = query.offset.unwrap_or(0) as i64;
+    let total = db::get_library_items_total(&state.db_pool, &server_id, &library_key).await?;
     let items =
         db::get_library_items(&state.db_pool, &server_id, &library_key, limit, offset).await?;
-    Ok(HttpResponse::Ok().json(items))
+    Ok(HttpResponse::Ok().json(LibraryItemsPage {
+        total,
+        limit,
+        offset,
+        items,
+    }))
 }
 
 /// Get full metadata for a single item.
@@ -395,21 +403,44 @@ async fn get_global_image_handler(
         ("limit" = Option<u32>, Query, description = "Max results to return"),
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
-    responses((status = 200, description = "Search results from Plex discover", body = serde_json::Value))
+    responses((status = 200, description = "Paginated discover results", body = DiscoverResultsPage))
 )]
 #[get("/discover")]
 async fn discover_handler(
     state: web::Data<AppState>,
     query: web::Query<SearchQuery>,
 ) -> Result<impl Responder, ApiError> {
-    let limit = query.limit.unwrap_or(30);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(30) as i64;
+    let offset = query.offset.unwrap_or(0) as i64;
     let results = state
         .plex_client
-        .search_global_discover(&query.q, limit, offset)
+        .search_global_discover(&query.q, limit as u32, offset as u32)
         .await?;
 
-    Ok(HttpResponse::Ok().json(results))
+    let items = results
+        .get("MediaContainer")
+        .and_then(|mc| mc.get("Metadata"))
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let discovered_total = results
+        .get("MediaContainer")
+        .and_then(|mc| {
+            mc.get("totalSize")
+                .or_else(|| mc.get("total"))
+                .or_else(|| mc.get("size"))
+        })
+        .and_then(|v| v.as_i64());
+
+    let total = discovered_total.unwrap_or_else(|| offset + items.len() as i64);
+
+    Ok(HttpResponse::Ok().json(DiscoverResultsPage {
+        total,
+        limit,
+        offset,
+        items,
+    }))
 }
 
 #[utoipa::path(
@@ -435,7 +466,7 @@ async fn discover_item_handler(
     post,
     path = "/api/requests",
     request_body = MediaRequestPayload,
-    responses((status = 200, description = "Created or updated request", body = MediaRequest))
+    responses((status = 200, description = "Created or updated requests", body = Vec<MediaRequest>))
 )]
 #[post("/requests")]
 async fn create_request_handler(
@@ -443,117 +474,60 @@ async fn create_request_handler(
     req: HttpRequest,
     payload: web::Json<MediaRequestPayload>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req
-        .extensions()
-        .get::<User>()
-        .map(|u| u.preferred_username.clone())
-        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
     let mut payload = payload.into_inner();
-    let discover_guid = payload.guid.clone();
-    payload.guid = payload
-        .guid
-        .rsplit('/')
-        .next()
-        .unwrap_or(&payload.guid)
-        .to_string();
+    payload.guid = payload.guid.rsplit('/').next().unwrap_or(&payload.guid).to_string();
 
-    if payload.item_type == "show" {
-        if let Some(requested_seasons) = payload.requested_seasons.as_ref() {
-            if !requested_seasons.is_empty() {
-                let discover_data = state
-                    .plex_client
-                    .get_discover_item_by_guid(&discover_guid)
-                    .await
-                    .map_err(|e| {
-                        ApiError::NotFound(format!(
-                            "Unable to validate requested seasons against Plex Discover: {}",
-                            e
-                        ))
-                    })?;
+    let mut created_requests = Vec::new();
+    let is_upgrade = db::item_exists_by_guid(&state.db_pool, &payload.guid).await?;
 
-                let show = discover_data
-                    .get("MediaContainer")
-                    .and_then(|mc| mc.get("Metadata"))
-                    .and_then(|m| m.as_array())
-                    .and_then(|arr| arr.first())
-                    .ok_or_else(|| {
-                        ApiError::NotFound(
-                            "Unable to validate requested seasons: Discover response missing metadata"
-                                .to_string(),
-                        )
-                    })?;
+    let seasons = if payload.item_type == "show" {
+        payload.requested_seasons.clone().unwrap_or_default()
+    } else {
+        vec![]
+    };
 
-                let mut max_season: i32 = 0;
+    let target_seasons = if seasons.is_empty() {
+        vec![None]
+    } else {
+        seasons.into_iter().map(Some).collect()
+    };
 
-                if let Some(children) = show
-                    .get("Children")
-                    .and_then(|c| c.get("Metadata"))
-                    .and_then(|m| m.as_array())
-                {
-                    for child in children {
-                        let is_season = child
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .map(|t| t == "season")
-                            .unwrap_or(true);
-                        if !is_season {
-                            continue;
-                        }
+    let mut new_seasons_for_ping = Vec::new();
+    let mut needs_ping = false;
 
-                        if let Some(index) = child.get("index").and_then(|i| i.as_i64()) {
-                            if index > max_season as i64 {
-                                max_season = index as i32;
-                            }
-                        }
-                    }
-                }
+    for season in target_seasons {
+        let (request, is_new) =
+            db::create_or_subscribe_request(&state.db_pool, &username, &payload, season, is_upgrade)
+                .await?;
+        created_requests.push(request);
 
-                if max_season == 0 {
-                    if let Some(child_count) = show.get("childCount").and_then(|c| c.as_i64()) {
-                        if child_count > 0 {
-                            max_season = child_count as i32;
-                        }
-                    }
-                }
-
-                if max_season <= 0 {
-                    return Err(ApiError::NotFound(
-                        "Unable to validate requested seasons: Discover did not provide a season count"
-                            .to_string(),
-                    ));
-                }
-
-                for &season_num in requested_seasons {
-                    if season_num <= 0 || season_num > max_season {
-                        return Err(ApiError::NotFound(format!(
-                            "Invalid request: Season {} does not exist. This show only has {} season(s).",
-                            season_num, max_season
-                        )));
-                    }
-                }
+        if is_new {
+            needs_ping = true;
+            if let Some(s) = season {
+                new_seasons_for_ping.push(s);
             }
         }
     }
 
-    let is_upgrade = db::item_exists_by_guid(&state.db_pool, &payload.guid).await?;
-    let request =
-        db::create_or_update_request(&state.db_pool, &username, &payload, is_upgrade).await?;
-
-    if let Ok(servers) = db::get_all_servers(&state.db_pool).await {
-        let mut unique_owners = std::collections::HashSet::new();
-
-        for server in servers {
-            if let Some(owner) = server.owner_username {
-                if !owner.trim().is_empty() {
+    if needs_ping {
+        if let Ok(servers) = db::get_all_servers(&state.db_pool).await {
+            let mut unique_owners = HashSet::new();
+            for server in servers {
+                if let Some(owner) = server.owner_username.filter(|o| !o.trim().is_empty()) {
                     unique_owners.insert(owner);
                 }
             }
-        }
 
-        for owner in unique_owners {
-            match state.oidc_client.get_csh_uid_by_plex(&owner).await {
-                Ok(Some(csh_uid)) => {
-                    if let Err(e) = state
+            let seasons_slice = if new_seasons_for_ping.is_empty() {
+                None
+            } else {
+                Some(new_seasons_for_ping.as_slice())
+            };
+
+            for owner in unique_owners {
+                if let Ok(Some(csh_uid)) = state.oidc_client.get_csh_uid_by_plex(&owner).await {
+                    let _ = state
                         .ping_client
                         .send_request_ping(
                             &csh_uid,
@@ -561,22 +535,17 @@ async fn create_request_handler(
                             &payload.title,
                             payload.year,
                             &payload.item_type,
-                            payload.requested_seasons.as_deref(),
+                            seasons_slice,
                             payload.requested_resolution.as_deref(),
                             is_upgrade,
                         )
-                        .await
-                    {
-                        tracing::error!("Failed to send request ping to {}: {:?}", csh_uid, e);
-                    }
+                        .await;
                 }
-                Ok(None) => tracing::info!("No CSH user found for Plex user '{}'", owner),
-                Err(e) => tracing::error!("OIDC Error looking up '{}': {}", owner, e),
             }
         }
     }
 
-    Ok(HttpResponse::Ok().json(request))
+    Ok(HttpResponse::Ok().json(created_requests))
 }
 
 /// List all media requests (both pending and fulfilled).
@@ -591,15 +560,29 @@ async fn get_all_requests_handler(state: web::Data<AppState>) -> Result<impl Res
     Ok(HttpResponse::Ok().json(requests))
 }
 
-/// Delete the user's own pending request.
+/// List active requests for a specific media guid.
+#[utoipa::path(
+    get,
+    path = "/api/requests/media/{guid}",
+    params(("guid" = String, Path, description = "Media GUID (full or normalized)")),
+    responses((status = 200, description = "List of active requests for this media", body = Vec<crate::models::MediaRequest>))
+)]
+#[get("/requests/media/{guid:.*}")]
+async fn get_active_requests_by_guid_handler(
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> Result<impl Responder, ApiError> {
+    let guid = path.into_inner();
+    let requests = db::get_active_requests_by_guid(&state.db_pool, &guid).await?;
+    Ok(HttpResponse::Ok().json(requests))
+}
+
+/// Remove the current user from a request (same as unsubscribe). Deletes the request if no subscribers remain.
 #[utoipa::path(
     delete,
     path = "/api/requests/{id}",
-    params(("id" = i32, Path, description = "Request ID to delete")),
-    responses(
-        (status = 200, description = "Request deleted"),
-        (status = 403, description = "Request not found or does not belong to user")
-    )
+    params(("id" = i32, Path, description = "Request ID")),
+    responses((status = 200, description = "Removed"), (status = 404, description = "Not subscribed"))
 )]
 #[delete("/requests/{id}")]
 async fn delete_request_handler(
@@ -607,58 +590,52 @@ async fn delete_request_handler(
     req: HttpRequest,
     path: web::Path<i32>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req
-        .extensions()
-        .get::<User>()
-        .map(|u| u.preferred_username.clone())
-        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
+    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
     let id = path.into_inner();
-    let rows_affected = db::delete_request(&state.db_pool, id, &username).await?;
-    if rows_affected == 0 {
-        return Err(ApiError::NotFound(
-            "Request not found or does not belong to you".to_string(),
-        ));
+    let rows = db::unsubscribe_request(&state.db_pool, id, &username).await?;
+    if rows == 0 {
+        return Err(ApiError::NotFound("Not subscribed to this request".to_string()));
     }
     Ok(HttpResponse::Ok().finish())
 }
 
-/// Get number of unread notifications for a user.
-#[utoipa::path(
-    get,
-    path = "/api/requests/notifications/count",
-    responses((status = 200, description = "Unread notification count", body = NotificationCount))
-)]
-#[get("/requests/notifications/count")]
-async fn get_notification_count_handler(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-) -> Result<impl Responder, ApiError> {
-    let username = req
-        .extensions()
-        .get::<User>()
-        .map(|u| u.preferred_username.clone())
-        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
-    let count = db::get_unread_notification_count(&state.db_pool, &username).await?;
-    Ok(HttpResponse::Ok().json(NotificationCount { count }))
-}
-
-/// Mark all requests for a user as viewed/clear notifications.
 #[utoipa::path(
     post,
-    path = "/api/requests/notifications/clear",
-    responses((status = 200, description = "Notifications cleared"))
+    path = "/api/requests/{id}/subscribe",
+    params(("id" = i32, Path, description = "Request ID to subscribe to")),
+    responses((status = 200, description = "Subscribed"))
 )]
-#[post("/requests/notifications/clear")]
-async fn clear_notifications_handler(
+#[post("/requests/{id}/subscribe")]
+async fn subscribe_request_handler(
     state: web::Data<AppState>,
     req: HttpRequest,
+    path: web::Path<i32>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req
-        .extensions()
-        .get::<User>()
-        .map(|u| u.preferred_username.clone())
-        .ok_or_else(|| ApiError::Unauthorized("Authentication required".to_string()))?;
-    db::mark_requests_viewed(&state.db_pool, &username).await?;
+    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let request_id = path.into_inner();
+    sqlx::query!("INSERT INTO media_request_subscribers (request_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING", request_id, username).execute(&state.db_pool).await?;
+    Ok(HttpResponse::Ok().finish())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/requests/{id}/subscribe",
+    params(("id" = i32, Path, description = "Request ID to unsubscribe from")),
+    responses((status = 200, description = "Unsubscribed"), (status = 404, description = "Not subscribed"))
+)]
+#[delete("/requests/{id}/subscribe")]
+async fn unsubscribe_request_handler(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i32>,
+) -> Result<impl Responder, ApiError> {
+    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let id = path.into_inner();
+    let rows_affected = db::unsubscribe_request(&state.db_pool, id, &username).await?;
+    
+    if rows_affected == 0 {
+        return Err(ApiError::NotFound("Not subscribed to this request".to_string()));
+    }
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -673,7 +650,7 @@ async fn clear_notifications_handler(
         ("limit" = Option<u32>, Query, description = "Max results to return"),
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
-    responses((status = 200, description = "Search results", body = Vec<SearchResult>))
+    responses((status = 200, description = "Paginated search results", body = SearchResultsPage))
 )]
 #[get("/search")]
 async fn search_handler(
@@ -682,8 +659,14 @@ async fn search_handler(
 ) -> Result<impl Responder, ApiError> {
     let limit = query.limit.unwrap_or(50) as i64;
     let offset = query.offset.unwrap_or(0) as i64;
-    let search_results = db::search_items(&state.db_pool, &query.q, limit, offset).await?;
-    Ok(HttpResponse::Ok().json(search_results))
+    let total = db::search_items_total(&state.db_pool, &query.q).await?;
+    let items = db::search_items(&state.db_pool, &query.q, limit, offset).await?;
+    Ok(HttpResponse::Ok().json(SearchResultsPage {
+        total,
+        limit,
+        offset,
+        items,
+    }))
 }
 
 /// Get media details by GUID across all servers.

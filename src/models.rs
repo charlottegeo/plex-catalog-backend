@@ -278,10 +278,37 @@ pub struct SearchQuery {
     pub offset: Option<u32>,
 }
 
+#[derive(Serialize, Debug, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResultsPage {
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub items: Vec<SearchResult>,
+}
+
+#[derive(Serialize, Debug, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverResultsPage {
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub items: Vec<serde_json::Value>,
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct LibraryItemsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Serialize, Debug, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryItemsPage {
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub items: Vec<Item>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -397,22 +424,15 @@ pub struct MediaRequestPayload {
     pub duration: Option<i64>,
 }
 
-/// Number of unread notifications.
-#[derive(Serialize, Deserialize, Debug, ToSchema)]
-pub struct NotificationCount {
-    pub count: i64,
-}
-
 /// Media request from the database.
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaRequest {
     pub id: i32,
-    pub username: String,
     pub guid: String,
     pub title: String,
     pub item_type: String,
-    pub requested_seasons: Option<Vec<i32>>,
+    pub requested_season: Option<i32>,
     pub requested_resolution: Option<String>,
     pub is_upgrade: bool,
     pub thumb: Option<String>,
@@ -425,4 +445,5 @@ pub struct MediaRequest {
     pub created_at: DateTime<Utc>,
     #[schema(value_type = String)]
     pub updated_at: DateTime<Utc>,
+    pub subscribers: Vec<String>,
 }

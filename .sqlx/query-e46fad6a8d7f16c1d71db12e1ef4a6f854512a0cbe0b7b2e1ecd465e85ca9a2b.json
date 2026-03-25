@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,\n            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,\n            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n            (\n                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])\n                FROM items i\n                JOIN servers s ON i.server_id = s.id\n                WHERE i.guid = mr.guid\n            ) as \"server_names: Vec<String>\"\n        FROM media_requests mr\n        ORDER BY\n            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,\n            mr.created_at DESC\n        ",
+  "query": "\n        SELECT mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season, mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n        (SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[]) FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = mr.guid) as \"server_names: Vec<String>\",\n        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id) as \"subscribers!: Vec<String>\"\n        FROM media_requests mr ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -10,78 +10,78 @@
       },
       {
         "ordinal": 1,
-        "name": "username",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 2,
         "name": "guid",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "title",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "item_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
-        "name": "requested_seasons",
-        "type_info": "Int4Array"
+        "ordinal": 4,
+        "name": "requested_season",
+        "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "requested_resolution",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "is_upgrade",
         "type_info": "Bool"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "thumb",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "year",
         "type_info": "Int4"
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "duration",
         "type_info": "Int8"
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "is_viewed",
         "type_info": "Bool"
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "server_names: Vec<String>",
         "type_info": "TextArray"
+      },
+      {
+        "ordinal": 15,
+        "name": "subscribers!: Vec<String>",
+        "type_info": "VarcharArray"
       }
     ],
     "parameters": {
@@ -92,7 +92,6 @@
       false,
       false,
       false,
-      false,
       true,
       true,
       false,
@@ -103,8 +102,9 @@
       true,
       true,
       false,
+      null,
       null
     ]
   },
-  "hash": "828dc5534271f68ea7cc8ffb873561148abf65a78ee7cc339331823abfc2e416"
+  "hash": "e46fad6a8d7f16c1d71db12e1ef4a6f854512a0cbe0b7b2e1ecd465e85ca9a2b"
 }

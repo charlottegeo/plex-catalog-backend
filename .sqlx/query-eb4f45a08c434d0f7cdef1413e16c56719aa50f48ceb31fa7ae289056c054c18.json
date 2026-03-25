@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT COUNT(*) as count FROM media_requests WHERE username = $1 AND status = 'fulfilled' AND is_viewed = FALSE",
+  "query": "SELECT COUNT(*) FROM media_request_subscribers WHERE request_id = $1",
   "describe": {
     "columns": [
       {
@@ -11,12 +11,12 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Int4"
       ]
     },
     "nullable": [
       null
     ]
   },
-  "hash": "be7463720a4a7cbd22693012b33c93713bf16b159a6f84c11d39c7d2f28c0ea9"
+  "hash": "eb4f45a08c434d0f7cdef1413e16c56719aa50f48ceb31fa7ae289056c054c18"
 }

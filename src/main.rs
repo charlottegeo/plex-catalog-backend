@@ -1,9 +1,10 @@
-use crate::models::{CachedImage, Item};
+use crate::models::{CachedImage, Item, MediaRequest};
 use crate::plex_client::PlexClient;
 use actix_web::{web, App, HttpServer};
 use futures::stream::{self, StreamExt};
 use moka::future::Cache;
 use sqlx::postgres::PgPoolOptions;
+use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -61,9 +62,8 @@ impl Modify for SecurityAddon {
         routes::discover_handler,
         routes::create_request_handler,
         routes::get_all_requests_handler,
+        routes::get_active_requests_by_guid_handler,
         routes::delete_request_handler,
-        routes::get_notification_count_handler,
-        routes::clear_notifications_handler,
         routes::get_media_details_handler,
         routes::get_seasons_handler,
         routes::get_episodes_handler,
@@ -80,10 +80,12 @@ impl Modify for SecurityAddon {
         crate::models::Stream,
         crate::models::PlexExtra,
         crate::models::SearchResult,
+        crate::models::SearchResultsPage,
         crate::models::SearchQuery,
+        crate::models::LibraryItemsQuery,
+        crate::models::LibraryItemsPage,
         crate::models::MediaRequestPayload,
         crate::models::MediaRequest,
-        crate::models::NotificationCount,
         crate::models::ImageQuery,
         crate::models::MediaDetails,
         crate::models::MediaVersion,
@@ -99,6 +101,76 @@ impl Modify for SecurityAddon {
     )
 )]
 struct ApiDoc;
+
+#[derive(Clone)]
+struct FulfilledPingPart {
+    title: String,
+    item_type: String,
+    season: Option<i32>,
+    resolution_display: String,
+    server_names: Vec<String>,
+}
+
+/// One ping per subscriber per media `guid`, batching multiple fulfilled seasons in the same sync run.
+fn build_fulfilled_batch_body(parts: &[FulfilledPingPart]) -> String {
+    if parts.is_empty() {
+        return String::new();
+    }
+    let title = &parts[0].title;
+    let item_type = parts[0].item_type.as_str();
+    let is_show = item_type == "show";
+
+    let mut merged_servers: Vec<String> = parts
+        .iter()
+        .flat_map(|p| p.server_names.iter().cloned())
+        .collect();
+    merged_servers.sort();
+    merged_servers.dedup();
+    let server_list = if merged_servers.is_empty() {
+        "unknown servers".to_string()
+    } else {
+        merged_servers.join(", ")
+    };
+
+    let mut unique_seasons: Vec<i32> = parts.iter().filter_map(|p| p.season).collect();
+    unique_seasons.sort_unstable();
+    unique_seasons.dedup();
+
+    let title_fragment = if is_show {
+        if unique_seasons.len() > 1 {
+            format!(
+                "{} (Seasons {})",
+                title,
+                unique_seasons
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else if unique_seasons.len() == 1 {
+            format!("{} (Season {})", title, unique_seasons[0])
+        } else {
+            title.clone()
+        }
+    } else {
+        title.clone()
+    };
+
+    let res_parts: Vec<&str> = parts
+        .iter()
+        .map(|p| p.resolution_display.as_str())
+        .collect();
+    let resolution_line = if res_parts.windows(2).all(|w| w[0] == w[1]) && !res_parts.is_empty() {
+        res_parts[0].to_string()
+    } else {
+        res_parts.join(" / ")
+    };
+
+    format!(
+        "Your request for {} was fulfilled with resolution {} and is now available on: {}.",
+        title_fragment, resolution_line, server_list
+    )
+}
 
 const SUPPORTED_LIBRARY_TYPES: &[&str] = &["movie", "show"];
 const DISCOVERY_WORKER_COUNT: usize = 2;
@@ -1007,7 +1079,7 @@ async fn sync_server(
                                     0.0
                                 };
 
-                                tracing::info!(
+                                tracing::debug!(
                                     "[{}] Progress: {}% | {}/{} items synced | Rate: {:.1} items/sec",
                                     library.title,
                                     progress_percent,
@@ -1156,17 +1228,15 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     if let Ok(expired) = db::get_expired_requests(&db_pool).await {
         for er in &expired {
-            if let Err(e) = app_state
-                .ping_client
-                .send_expired_ping(&er.username, &er.title)
-                .await
-            {
-                tracing::error!(
-                    "Failed to send expired ping to user {} for {}: {:?}",
-                    er.username,
-                    er.title,
-                    e
-                );
+            for sub in &er.subscribers {
+                if let Err(e) = app_state.ping_client.send_expired_ping(sub, &er.title).await {
+                    tracing::error!(
+                        "Failed to send expired ping to user {} for {}: {:?}",
+                        sub,
+                        er.title,
+                        e
+                    );
+                }
             }
         }
         if let Ok(deleted) = db::delete_expired_requests(&db_pool).await {
@@ -1183,10 +1253,12 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     if let Ok(pending) = db::get_pending_requests(&db_pool).await {
         if pending.is_empty() {
-            tracing::info!("No pending media requests to evaluate.");
+            tracing::info!("No pending media requests to check.");
         } else {
-            tracing::info!("Evaluating {} pending media requests...", pending.len());
+            tracing::info!("Checking {} pending media requests...", pending.len());
         }
+
+        let mut fulfilled_for_pings: Vec<(MediaRequest, String, Vec<String>)> = Vec::new();
 
         for req in pending {
             let fulfilled_resolution = match req.item_type.as_str() {
@@ -1200,14 +1272,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     .await
                 }
                 "show" => {
-                    db::is_show_request_fulfilled(
-                        &db_pool,
-                        &req.guid,
-                        req.requested_seasons.as_deref(),
-                        req.requested_resolution.as_deref(),
-                        req.is_upgrade,
-                    )
-                    .await
+                    db::is_show_request_fulfilled(&db_pool, &req.guid, req.requested_season).await
                 }
                 _ => Ok(None),
             };
@@ -1217,10 +1282,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     tracing::warn!("Failed to mark request {} as fulfilled: {:?}", req.id, e);
                 } else {
                     tracing::info!(
-                        "Media request fulfilled: {} (id={}) for user {}",
+                        "Media request fulfilled: {} (id={}) subscribers={:?}",
                         req.title,
                         req.id,
-                        req.username
+                        req.subscribers
                     );
                     let resolution = if let Some(req_res) = req
                         .requested_resolution
@@ -1241,19 +1306,46 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     let server_names = db::get_server_names_for_guid(&db_pool, &req.guid)
                         .await
                         .unwrap_or_default();
-                    if let Err(e) = app_state
-                        .ping_client
-                        .send_fulfilled_ping(&req.username, &req.title, &resolution, &server_names)
-                        .await
-                    {
-                        tracing::error!(
-                            "Failed to send fulfilled ping to {} for {}: {:?}",
-                            req.username,
-                            req.title,
-                            e
-                        );
-                    }
+                    fulfilled_for_pings.push((req, resolution, server_names));
                 }
+            }
+        }
+
+        let mut ping_groups: HashMap<(String, String), Vec<FulfilledPingPart>> = HashMap::new();
+        for (req, resolution_display, server_names) in fulfilled_for_pings {
+            let guid_key = db::media_guid_key(&req.guid);
+            for subscriber in &req.subscribers {
+                ping_groups
+                    .entry((subscriber.clone(), guid_key.clone()))
+                    .or_default()
+                    .push(FulfilledPingPart {
+                        title: req.title.clone(),
+                        item_type: req.item_type.clone(),
+                        season: req.requested_season,
+                        resolution_display: resolution_display.clone(),
+                        server_names: server_names.clone(),
+                    });
+            }
+        }
+
+        for ((subscriber, _guid), mut parts) in ping_groups {
+            parts.sort_by_key(|p| p.season.unwrap_or(i32::MAX));
+            parts.dedup_by(|a, b| {
+                a.season == b.season
+                    && a.title == b.title
+                    && a.resolution_display == b.resolution_display
+            });
+            let body = build_fulfilled_batch_body(&parts);
+            if let Err(e) = app_state
+                .ping_client
+                .send_fulfilled_ping_body(&subscriber, &body)
+                .await
+            {
+                tracing::error!(
+                    "Failed to send fulfilled ping to {}: {:?}",
+                    subscriber,
+                    e
+                );
             }
         }
     } else {

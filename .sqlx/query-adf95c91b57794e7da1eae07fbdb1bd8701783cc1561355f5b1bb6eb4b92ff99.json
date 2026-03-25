@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COUNT(*) as \"count!\"\n        FROM items i\n        WHERE\n            i.fts_document @@ to_tsquery('simple', $1)\n            AND i.item_type IN ('movie', 'show')\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "adf95c91b57794e7da1eae07fbdb1bd8701783cc1561355f5b1bb6eb4b92ff99"
+}

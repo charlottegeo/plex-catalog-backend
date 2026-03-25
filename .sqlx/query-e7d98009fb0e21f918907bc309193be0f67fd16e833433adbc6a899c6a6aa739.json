@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM media_request_subscribers WHERE request_id = $1 AND username = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e7d98009fb0e21f918907bc309193be0f67fd16e833433adbc6a899c6a6aa739"
+}

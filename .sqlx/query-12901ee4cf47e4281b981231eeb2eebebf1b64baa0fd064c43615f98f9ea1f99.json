@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT mp.video_resolution as \"res?\" FROM items show\n            JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'\n              AND (ep.parent_id = show.id OR EXISTS (SELECT 1 FROM items s WHERE s.id = ep.parent_id AND s.parent_id = show.id AND s.item_type = 'season'))\n            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id\n            WHERE show.guid = $1 AND show.item_type = 'show' AND mp.video_resolution IS NOT NULL\n            GROUP BY mp.video_resolution ORDER BY COUNT(*) DESC LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "res?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "12901ee4cf47e4281b981231eeb2eebebf1b64baa0fd064c43615f98f9ea1f99"
+}

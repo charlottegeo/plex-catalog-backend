@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id FROM media_requests \n        WHERE status = 'pending' AND guid = $1 AND item_type = $2 \n          AND requested_season IS NOT DISTINCT FROM $3 \n          AND requested_resolution IS NOT DISTINCT FROM $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e57450a15a3de92aa20125e09a503e3e2e8bdd9374aa12290e6e73c4d3054d96"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT mr.title,\n        COALESCE(\n            (SELECT array_agg(DISTINCT mrs.username) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id),\n            ARRAY[]::TEXT[]\n        ) as \"subscribers!\"\n        FROM media_requests mr\n        WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')\n           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "subscribers!",
+        "type_info": "VarcharArray"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "9facf1d238fbcffd34568b85c66fdb9d3e0cdb146801ea84bf51fdef1cc06fac"
+}

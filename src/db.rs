@@ -249,6 +249,24 @@ pub async fn get_library_items(
     .collect()
 }
 
+pub async fn get_library_items_total(
+    pool: &PgPool,
+    server_id: &str,
+    library_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) as "count!"
+        FROM items
+        WHERE server_id = $1 AND library_id = $2 AND item_type IN ('movie', 'show')
+        "#,
+        server_id,
+        library_id
+    )
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn upsert_server(
     pool: &PgPool,
     server: &Device,
@@ -570,7 +588,7 @@ pub async fn prune_old_data(
     pool: &PgPool,
     sync_start_time: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    println!("Pruning old data from database...");
+    tracing::debug!("Pruning old data from database...");
     let streams_deleted = sqlx::query!("DELETE FROM streams WHERE last_seen < $1", sync_start_time)
         .execute(pool)
         .await?
@@ -597,9 +615,13 @@ pub async fn prune_old_data(
         .execute(pool)
         .await?
         .rows_affected();
-    println!(
-        "Pruning complete. Removed: {} servers, {} libraries, {} items, {} parts, {} streams.",
-        servers_deleted, libraries_deleted, items_deleted, parts_deleted, streams_deleted
+    tracing::info!(
+        "Pruning complete. Pruned: {} servers, {} libraries, {} items, {} parts, {} streams.",
+        servers_deleted,
+        libraries_deleted,
+        items_deleted,
+        parts_deleted,
+        streams_deleted
     );
     Ok(())
 }
@@ -643,6 +665,29 @@ pub async fn search_items(
         offset
     )
     .fetch_all(pool)
+    .await
+}
+
+pub async fn search_items_total(pool: &PgPool, query: &str) -> Result<i64, sqlx::Error> {
+    let fts_query = query
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>()
+        .join(" & ")
+        + ":*";
+
+    sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*) as "count!"
+        FROM items i
+        WHERE
+            i.fts_document @@ to_tsquery('simple', $1)
+            AND i.item_type IN ('movie', 'show')
+        "#,
+        fts_query
+    )
+    .fetch_one(pool)
     .await
 }
 
@@ -896,69 +941,98 @@ pub async fn item_exists_by_guid(pool: &PgPool, guid: &str) -> Result<bool, sqlx
     Ok(exists)
 }
 
-/// Insert a new media request. Either adds a new request or updates an existing one.
-/// On conflict with (username, guid) where status='pending', merges seasons and updates resolution, is_upgrade.
-pub async fn create_or_update_request(
+pub async fn get_request_by_id(pool: &PgPool, id: i32) -> Result<Option<MediaRequest>, sqlx::Error> {
+    sqlx::query_as!(
+        MediaRequest,
+        r#"
+        SELECT
+            mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season,
+            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,
+            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
+            ARRAY[]::TEXT[] as "server_names: Vec<String>",
+            (
+                SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[])
+                FROM media_request_subscribers mrs
+                WHERE mrs.request_id = mr.id
+            ) as "subscribers!: Vec<String>"
+        FROM media_requests mr
+        WHERE mr.id = $1
+        "#,
+        id
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Create a new request or subscribe to an existing one.
+/// Returns (Request, is_new) to determine if server owners should be pinged.
+pub async fn create_or_subscribe_request(
     pool: &PgPool,
     username: &str,
     payload: &crate::models::MediaRequestPayload,
+    season: Option<i32>,
     is_upgrade: bool,
-) -> Result<MediaRequest, sqlx::Error> {
-    use sqlx::Row;
-    let row = sqlx::query(
-        r#"
-        INSERT INTO media_requests (username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration)
-        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, false, $9, $10)
-        ON CONFLICT (username, guid) WHERE (status = 'pending')
-        DO UPDATE SET
-            title = EXCLUDED.title,
-            requested_seasons = (
-                SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), '{}')
-                FROM unnest(
-                    COALESCE(media_requests.requested_seasons, '{}') || COALESCE(EXCLUDED.requested_seasons, '{}')
-                ) AS x
-            ),
-            requested_resolution = COALESCE(EXCLUDED.requested_resolution, media_requests.requested_resolution),
-            is_upgrade = EXCLUDED.is_upgrade,
-            thumb = COALESCE(EXCLUDED.thumb, media_requests.thumb),
-            year = COALESCE(EXCLUDED.year, media_requests.year),
-            duration = COALESCE(EXCLUDED.duration, media_requests.duration),
-            is_viewed = false,
-            updated_at = NOW()
-        RETURNING id, username, guid, title, item_type, requested_seasons, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration, created_at, updated_at
-        "#,
-    )
-    .bind(username)
-    .bind(&payload.guid)
-    .bind(&payload.title)
-    .bind(&payload.item_type)
-    .bind(&payload.requested_seasons)
-    .bind(&payload.requested_resolution)
-    .bind(is_upgrade)
-    .bind(&payload.thumb)
-    .bind(payload.year)
-    .bind(payload.duration)
-    .fetch_one(pool)
-    .await?;
+) -> Result<(MediaRequest, bool), sqlx::Error> {
+    let mut tx = pool.begin().await?;
 
-    Ok(MediaRequest {
-        id: row.try_get("id")?,
-        username: row.try_get("username")?,
-        guid: row.try_get("guid")?,
-        title: row.try_get("title")?,
-        item_type: row.try_get("item_type")?,
-        requested_seasons: row.try_get("requested_seasons")?,
-        requested_resolution: row.try_get("requested_resolution")?,
-        is_upgrade: row.try_get("is_upgrade")?,
-        thumb: row.try_get("thumb")?,
-        is_viewed: row.try_get("is_viewed")?,
-        year: row.try_get("year")?,
-        duration: row.try_get("duration")?,
-        server_names: Some(vec![]),
-        status: row.try_get("status")?,
-        created_at: row.try_get("created_at")?,
-        updated_at: row.try_get("updated_at")?,
-    })
+    let existing_id: Option<i32> = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM media_requests 
+        WHERE status = 'pending' AND guid = $1 AND item_type = $2 
+          AND requested_season IS NOT DISTINCT FROM $3 
+          AND requested_resolution IS NOT DISTINCT FROM $4
+        "#,
+        payload.guid, payload.item_type, season, payload.requested_resolution
+    ).fetch_optional(&mut *tx).await?;
+
+    let (request_id, is_new) = if let Some(id) = existing_id {
+        (id, false)
+    } else {
+        let new_id = sqlx::query_scalar!(
+            r#"
+            INSERT INTO media_requests (guid, title, item_type, requested_season, requested_resolution, status, is_upgrade, thumb, is_viewed, year, duration)
+            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, false, $8, $9)
+            RETURNING id
+            "#,
+            payload.guid, payload.title, payload.item_type, season, payload.requested_resolution, is_upgrade, payload.thumb, payload.year, payload.duration
+        ).fetch_one(&mut *tx).await?;
+        (new_id, true)
+    };
+
+    sqlx::query!(
+        "INSERT INTO media_request_subscribers (request_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        request_id, username
+    ).execute(&mut *tx).await?;
+
+    tx.commit().await?;
+
+    let req = get_request_by_id(pool, request_id)
+        .await?
+        .expect("media_requests row must exist after subscribe");
+    Ok((req, is_new))
+}
+
+/// Unsubscribe a user from a request. Deletes the parent request if no subscribers are left.
+pub async fn unsubscribe_request(pool: &PgPool, request_id: i32, username: &str) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let res = sqlx::query!(
+        "DELETE FROM media_request_subscribers WHERE request_id = $1 AND username = $2",
+        request_id, username
+    ).execute(&mut *tx).await?;
+    
+    let rows_affected = res.rows_affected();
+    if rows_affected > 0 {
+        let count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM media_request_subscribers WHERE request_id = $1", request_id
+        ).fetch_one(&mut *tx).await?.unwrap_or(0);
+        
+        if count == 0 {
+            sqlx::query!("DELETE FROM media_requests WHERE id = $1", request_id).execute(&mut *tx).await?;
+        }
+    }
+    
+    tx.commit().await?;
+    Ok(rows_affected)
 }
 
 /// Fetch all pending media requests.
@@ -966,14 +1040,25 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, username, guid, title, item_type, requested_seasons, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at
-        FROM media_requests
-        WHERE status = 'pending'
-        ORDER BY created_at ASC
+        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at,
+        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as "subscribers!: Vec<String>"
+        FROM media_requests WHERE status = 'pending' ORDER BY created_at ASC
+        "#
+    ).fetch_all(pool).await
+}
+
+/// Fetch active (pending) media requests for a specific guid.
+pub async fn get_active_requests_by_guid(pool: &PgPool, guid: &str) -> Result<Vec<MediaRequest>, sqlx::Error> {
+    let normalized = guid_for_item_lookup(guid);
+    sqlx::query_as!(
+        MediaRequest,
+        r#"
+        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at,
+        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as "subscribers!: Vec<String>"
+        FROM media_requests WHERE status = 'pending' AND guid = $1 ORDER BY created_at ASC
         "#,
-    )
-    .fetch_all(pool)
-    .await
+        normalized
+    ).fetch_all(pool).await
 }
 
 /// Fetch all media requests (both pending and fulfilled).
@@ -981,36 +1066,12 @@ pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT
-            mr.id, mr.username, mr.guid, mr.title, mr.item_type, mr.requested_seasons,
-            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,
-            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
-            (
-                SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[])
-                FROM items i
-                JOIN servers s ON i.server_id = s.id
-                WHERE i.guid = mr.guid
-            ) as "server_names: Vec<String>"
-        FROM media_requests mr
-        ORDER BY
-            CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END,
-            mr.created_at DESC
+        SELECT mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season, mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
+        (SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[]) FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = mr.guid) as "server_names: Vec<String>",
+        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id) as "subscribers!: Vec<String>"
+        FROM media_requests mr ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at DESC
         "#
-    )
-    .fetch_all(pool)
-    .await
-}
-
-/// Delete a user's own pending request.
-pub async fn delete_request(pool: &PgPool, id: i32, username: &str) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query!(
-        "DELETE FROM media_requests WHERE id = $1 AND username = $2 AND status = 'pending'",
-        id,
-        username
-    )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
+    ).fetch_all(pool).await
 }
 
 /// Mark a media request as fulfilled.
@@ -1038,32 +1099,6 @@ pub async fn delete_expired_requests(pool: &PgPool) -> Result<u64, sqlx::Error> 
     Ok(result.rows_affected())
 }
 
-/// Get the number of unread fulfilled requests for a user.
-pub async fn get_unread_notification_count(
-    pool: &PgPool,
-    username: &str,
-) -> Result<i64, sqlx::Error> {
-    let count = sqlx::query_scalar!(
-        "SELECT COUNT(*) as count FROM media_requests WHERE username = $1 AND status = 'fulfilled' AND is_viewed = FALSE",
-        username
-    )
-    .fetch_one(pool)
-    .await?
-    .unwrap_or(0);
-    Ok(count)
-}
-
-/// Mark all fulfilled requests for a user as viewed.
-pub async fn mark_requests_viewed(pool: &PgPool, username: &str) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE media_requests SET is_viewed = TRUE WHERE username = $1 AND status = 'fulfilled' AND is_viewed = FALSE",
-        username
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// Get server names that have an item with the given guid.
 pub async fn get_server_names_for_guid(
     pool: &PgPool,
@@ -1081,33 +1116,46 @@ pub async fn get_server_names_for_guid(
 
 /// Expired request info for pings before deletion.
 pub struct ExpiredRequest {
-    pub username: String,
     pub title: String,
+    pub subscribers: Vec<String>,
 }
 
 /// Fetch requests that will be deleted by delete_expired_requests (for pings).
 pub async fn get_expired_requests(pool: &PgPool) -> Result<Vec<ExpiredRequest>, sqlx::Error> {
-    let rows = sqlx::query_as!(
-        ExpiredRequest,
+    let rows = sqlx::query!(
         r#"
-        SELECT username, title
-        FROM media_requests
+        SELECT mr.title,
+        COALESCE(
+            (SELECT array_agg(DISTINCT mrs.username) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id),
+            ARRAY[]::TEXT[]
+        ) as "subscribers!"
+        FROM media_requests mr
         WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')
            OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')
         "#
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .map(|r| ExpiredRequest {
+            title: r.title,
+            subscribers: r.subscribers,
+        })
+        .collect())
 }
 
 fn guid_for_item_lookup(guid: &str) -> &str {
     guid.rsplit('/').next().unwrap_or(guid)
 }
 
+/// Stable key for the same catalog title (matches lookup normalization). Use when grouping rows that share a guid.
+pub fn media_guid_key(guid: &str) -> String {
+    guid_for_item_lookup(guid).to_string()
+}
+
 /// Check if a movie request is fulfilled in the database.
-/// If is_upgrade = false (new media): fulfill as soon as any resolution exists.
-/// If is_upgrade = true (upgrade): only fulfill when the resolution matches the requested resolution.
+/// New movie: any copy counts; upgrade: must match requested resolution.
 pub async fn is_movie_request_fulfilled(
     pool: &PgPool,
     guid: &str,
@@ -1118,113 +1166,71 @@ pub async fn is_movie_request_fulfilled(
 
     if !is_upgrade {
         let exists = sqlx::query_scalar!(
-            r#"SELECT EXISTS(
-                SELECT 1 FROM items
-                WHERE guid = $1
-                  AND item_type = 'movie'
-            ) AS "exists!""#,
+            r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'movie') AS "exists!""#,
             normalized_guid
         )
         .fetch_one(pool)
         .await?;
 
-        if !exists {
-            return Ok(None);
+        if exists {
+            let res = sqlx::query_scalar!(
+                r#"
+                SELECT mp.video_resolution as "res?" FROM items i
+                JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
+                WHERE i.guid = $1 AND i.item_type = 'movie' AND mp.video_resolution IS NOT NULL
+                GROUP BY mp.video_resolution ORDER BY COUNT(*) DESC LIMIT 1
+                "#,
+                normalized_guid
+            )
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+            return Ok(Some(
+                res.unwrap_or_else(|| "Unknown".to_string()),
+            ));
         }
+        return Ok(None);
+    }
+
+    if let Some(req_res) = requested_resolution.filter(|r| !r.trim().is_empty()) {
+        let pattern = match req_res.to_lowercase().as_str() {
+            "4k" | "2160p" => "%4k%".to_string(),
+            "1080p" | "1080" => "%1080%".to_string(),
+            "720p" | "720" => "%720%".to_string(),
+            r => format!("%{}%", r),
+        };
 
         let res = sqlx::query_scalar!(
             r#"
-            SELECT mp.video_resolution as "res?"
-            FROM items i
+            SELECT mp.video_resolution as "res?" FROM items i
             JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-            WHERE i.guid = $1
-              AND i.item_type = 'movie'
+            WHERE i.guid = $1 AND i.item_type = 'movie'
+              AND (mp.video_resolution ILIKE $2 OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%'))
               AND mp.video_resolution IS NOT NULL
-            GROUP BY mp.video_resolution
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
+            GROUP BY mp.video_resolution ORDER BY COUNT(*) DESC LIMIT 1
             "#,
-            normalized_guid
+            normalized_guid,
+            pattern
         )
         .fetch_optional(pool)
         .await?
         .flatten();
-
-        return Ok(Some(res.unwrap_or_else(|| "Unknown".to_string())));
+        Ok(res)
+    } else {
+        Ok(None)
     }
-
-    if requested_resolution.is_none() {
-        let res = sqlx::query_scalar!(
-            r#"
-            SELECT mp.video_resolution as "res?"
-            FROM items i
-            JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-            WHERE i.guid = $1
-              AND i.item_type = 'movie'
-              AND mp.video_resolution IS NOT NULL
-            GROUP BY mp.video_resolution
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
-            "#,
-            normalized_guid
-        )
-        .fetch_optional(pool)
-        .await?
-        .flatten();
-
-        return Ok(res);
-    }
-
-    let resolution_pattern = match requested_resolution.unwrap().to_lowercase().as_str() {
-        "4k" | "2160p" => "%4k%".to_string(),
-        "1080p" | "1080" => "%1080%".to_string(),
-        "720p" | "720" => "%720%".to_string(),
-        r => format!("%{}%", r),
-    };
-
-    let res = sqlx::query_scalar!(
-        r#"
-        SELECT mp.video_resolution as "res?"
-        FROM items i
-        JOIN media_parts mp ON mp.item_id = i.id AND mp.server_id = i.server_id
-        WHERE i.guid = $1
-          AND i.item_type = 'movie'
-          AND (
-            mp.video_resolution ILIKE $2
-            OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
-          )
-          AND mp.video_resolution IS NOT NULL
-        GROUP BY mp.video_resolution
-        ORDER BY COUNT(*) DESC
-        LIMIT 1
-        "#,
-        normalized_guid,
-        resolution_pattern
-    )
-    .fetch_optional(pool)
-    .await?
-    .flatten();
-
-    Ok(res)
 }
 
-/// Check if a TV show request is fulfilled in the database.
-/// If is_upgrade = false (new media): verify show + seasons exist, ignore resolution.
-/// If is_upgrade = true (upgrade): check resolution on episodes.
+/// TV show: season presence only; resolution is the most common across episodes (for the ping).
 pub async fn is_show_request_fulfilled(
     pool: &PgPool,
     guid: &str,
-    requested_seasons: Option<&[i32]>,
-    requested_resolution: Option<&str>,
-    is_upgrade: bool,
+    requested_season: Option<i32>,
 ) -> Result<Option<String>, sqlx::Error> {
     let normalized_guid = guid_for_item_lookup(guid);
+
     let show_exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(
-            SELECT 1 FROM items
-            WHERE guid = $1
-              AND item_type = 'show'
-        ) AS "exists!""#,
+        r#"SELECT EXISTS(SELECT 1 FROM items WHERE guid = $1 AND item_type = 'show') AS "exists!""#,
         normalized_guid
     )
     .fetch_one(pool)
@@ -1234,224 +1240,79 @@ pub async fn is_show_request_fulfilled(
         return Ok(None);
     }
 
-    if !is_upgrade {
-        let seasons = match requested_seasons {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                let res = sqlx::query_scalar!(
-                    r#"
-                    SELECT mp.video_resolution as "res?"
-                    FROM items show
-                    JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
-                      AND (
-                        ep.parent_id = show.id
-                        OR EXISTS (
-                          SELECT 1 FROM items s
-                          WHERE s.id = ep.parent_id
-                            AND s.parent_id = show.id
-                            AND s.server_id = show.server_id
-                            AND s.item_type = 'season'
-                        )
-                      )
-                    JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-                    WHERE show.guid = $1 AND show.item_type = 'show'
-                      AND mp.video_resolution IS NOT NULL
-                    GROUP BY mp.video_resolution
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 2
-                    "#,
-                    normalized_guid
-                )
-                .fetch_all(pool)
-                .await?;
-
-                return Ok(match res.len() {
-                    0 => Some("Unknown".to_string()),
-                    1 => res[0].clone().or(Some("Unknown".to_string())),
-                    _ => Some("Mixed".to_string()),
-                });
-            }
-        };
-        for &season_num in seasons.iter() {
-            let season_exists = sqlx::query_scalar!(
-                r#"
-                SELECT EXISTS(
-                    SELECT 1 FROM items show
-                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
-                        AND season.item_type = 'season' AND season.index = $2
-                    WHERE show.guid = $1 AND show.item_type = 'show'
-                ) AS "exists!"
-                "#,
-                normalized_guid,
-                season_num
-            )
-            .fetch_one(pool)
-            .await?;
-            if !season_exists {
-                let direct_episodes = sqlx::query_scalar!(
-                    r#"
-                    SELECT EXISTS(
-                        SELECT 1 FROM items show
-                        JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
-                            AND ep.item_type = 'episode'
-                        WHERE show.guid = $1 AND show.item_type = 'show'
-                        AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
-                    ) AS "exists!"
-                    "#,
-                    normalized_guid
-                )
-                .fetch_one(pool)
-                .await?;
-                if !(direct_episodes && season_num == 1) {
-                    return Ok(None);
-                }
-            }
-        }
-
-        let res = sqlx::query_scalar!(
+    if let Some(season_num) = requested_season {
+        let season_exists = sqlx::query_scalar!(
             r#"
-            SELECT mp.video_resolution as "res?"
-            FROM items show
-            JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
-              AND season.item_type = 'season'
-            JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id
-              AND ep.item_type = 'episode'
-            JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-            WHERE show.guid = $1 AND show.item_type = 'show'
-              AND season.index = ANY($2)
-              AND mp.video_resolution IS NOT NULL
-            GROUP BY mp.video_resolution
-            ORDER BY COUNT(*) DESC
-            LIMIT 2
+            SELECT EXISTS(
+                SELECT 1 FROM items show
+                JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
+                    AND season.item_type = 'season' AND season.index = $2
+                WHERE show.guid = $1 AND show.item_type = 'show'
+            ) AS "exists!"
             "#,
             normalized_guid,
-            seasons
+            season_num
         )
-        .fetch_all(pool)
+        .fetch_one(pool)
         .await?;
 
-        return Ok(match res.len() {
-            0 => Some("Unknown".to_string()),
-            1 => res[0].clone().or(Some("Unknown".to_string())),
-            _ => Some("Mixed".to_string()),
-        });
-    }
-
-    let Some(req_res) = requested_resolution.filter(|r| !r.trim().is_empty()) else {
-        return Ok(None);
-    };
-    let seasons = match requested_seasons {
-        Some(s) if !s.is_empty() => s,
-        _ => &[],
-    };
-
-    if !seasons.is_empty() {
-        for &season_num in seasons.iter() {
-            let season_exists = sqlx::query_scalar!(
+        if !season_exists {
+            let direct_episodes = sqlx::query_scalar!(
                 r#"
                 SELECT EXISTS(
                     SELECT 1 FROM items show
-                    JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
-                        AND season.item_type = 'season' AND season.index = $2
+                    JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id AND ep.item_type = 'episode'
                     WHERE show.guid = $1 AND show.item_type = 'show'
+                    AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
                 ) AS "exists!"
                 "#,
-                normalized_guid,
-                season_num
+                normalized_guid
             )
             .fetch_one(pool)
             .await?;
-            if !season_exists {
-                let direct_episodes = sqlx::query_scalar!(
-                    r#"
-                    SELECT EXISTS(
-                        SELECT 1 FROM items show
-                        JOIN items ep ON ep.parent_id = show.id AND ep.server_id = show.server_id
-                            AND ep.item_type = 'episode'
-                        WHERE show.guid = $1 AND show.item_type = 'show'
-                        AND NOT EXISTS (SELECT 1 FROM items s WHERE s.parent_id = show.id AND s.item_type = 'season')
-                    ) AS "exists!"
-                    "#,
-                    normalized_guid
-                )
-                .fetch_one(pool)
-                .await?;
-                if !(direct_episodes && season_num == 1) {
-                    return Ok(None);
-                }
+
+            if !(direct_episodes && season_num == 1) {
+                return Ok(None);
             }
         }
     }
 
-    let pattern = match req_res.to_lowercase().as_str() {
-        "4k" | "2160p" => "%4k%".to_string(),
-        "1080p" | "1080" => "%1080%".to_string(),
-        "720p" | "720" => "%720%".to_string(),
-        r => format!("%{}%", r),
-    };
-
-    if !seasons.is_empty() {
+    if let Some(season_num) = requested_season {
         let res = sqlx::query_scalar!(
             r#"
-            SELECT mp.video_resolution as "res?"
-            FROM items show
-            JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id
-              AND season.item_type = 'season'
-            JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id
-              AND ep.item_type = 'episode'
+            SELECT mp.video_resolution as "res?" FROM items show
+            JOIN items season ON season.parent_id = show.id AND season.server_id = show.server_id AND season.item_type = 'season'
+            JOIN items ep ON ep.parent_id = season.id AND ep.server_id = season.server_id AND ep.item_type = 'episode'
             JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-            WHERE show.guid = $1 AND show.item_type = 'show'
-              AND season.index = ANY($2)
-              AND (
-                mp.video_resolution ILIKE $3
-                OR ($3 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
-              )
-              AND mp.video_resolution IS NOT NULL
-            GROUP BY mp.video_resolution
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
+            WHERE show.guid = $1 AND show.item_type = 'show' AND season.index = $2 AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution ORDER BY COUNT(*) DESC LIMIT 1
             "#,
             normalized_guid,
-            seasons,
-            pattern
+            season_num
         )
         .fetch_optional(pool)
         .await?
         .flatten();
-        Ok(res)
+        Ok(Some(
+            res.unwrap_or_else(|| "Unknown".to_string()),
+        ))
     } else {
         let res = sqlx::query_scalar!(
             r#"
-            SELECT mp.video_resolution as "res?"
-            FROM items show
+            SELECT mp.video_resolution as "res?" FROM items show
             JOIN items ep ON ep.server_id = show.server_id AND ep.item_type = 'episode'
-              AND (
-                ep.parent_id = show.id
-                OR EXISTS (
-                  SELECT 1 FROM items s
-                  WHERE s.id = ep.parent_id
-                    AND s.parent_id = show.id
-                    AND s.server_id = show.server_id
-                    AND s.item_type = 'season'
-                )
-              )
+              AND (ep.parent_id = show.id OR EXISTS (SELECT 1 FROM items s WHERE s.id = ep.parent_id AND s.parent_id = show.id AND s.item_type = 'season'))
             JOIN media_parts mp ON mp.item_id = ep.id AND mp.server_id = ep.server_id
-            WHERE show.guid = $1 AND show.item_type = 'show'
-              AND (
-                mp.video_resolution ILIKE $2
-                OR ($2 = '%4k%' AND mp.video_resolution ILIKE '%2160%')
-              )
-              AND mp.video_resolution IS NOT NULL
-            GROUP BY mp.video_resolution
-            ORDER BY COUNT(*) DESC
-            LIMIT 1
+            WHERE show.guid = $1 AND show.item_type = 'show' AND mp.video_resolution IS NOT NULL
+            GROUP BY mp.video_resolution ORDER BY COUNT(*) DESC LIMIT 1
             "#,
-            normalized_guid,
-            pattern
+            normalized_guid
         )
         .fetch_optional(pool)
         .await?
         .flatten();
-        Ok(res)
+        Ok(Some(
+            res.unwrap_or_else(|| "Unknown".to_string()),
+        ))
     }
 }
