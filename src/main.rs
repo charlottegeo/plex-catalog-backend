@@ -82,6 +82,7 @@ impl Modify for SecurityAddon {
         crate::models::SearchResult,
         crate::models::SearchResultsPage,
         crate::models::SearchQuery,
+        crate::models::DiscoverResultsPage,
         crate::models::LibraryItemsQuery,
         crate::models::LibraryItemsPage,
         crate::models::MediaRequestPayload,

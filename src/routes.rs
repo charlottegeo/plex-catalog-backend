@@ -1,10 +1,11 @@
 use crate::auth::{CSHAuth, User};
+#[allow(unused_imports)]
 use crate::{
     db,
     error::ApiError,
     models::{
         DbServer, DiscoverResultsPage, GlobalImageQuery, ImageQuery, LibraryItemsPage,
-        LibraryItemsQuery, MediaRequestPayload, SearchQuery, SearchResultsPage,
+        LibraryItemsQuery, MediaRequest, MediaRequestPayload, SearchQuery, SearchResultsPage,
     },
     AppState,
 };
@@ -579,7 +580,7 @@ async fn get_all_requests_handler(state: web::Data<AppState>) -> Result<impl Res
     get,
     path = "/api/requests/media/{guid}",
     params(("guid" = String, Path, description = "Media GUID (full or normalized)")),
-    responses((status = 200, description = "List of active requests for this media", body = Vec<crate::models::MediaRequest>))
+    responses((status = 200, description = "List of active requests for this media", body = Vec<MediaRequest>))
 )]
 #[get("/requests/media/{guid:.*}")]
 async fn get_active_requests_by_guid_handler(

@@ -293,6 +293,7 @@ pub struct DiscoverResultsPage {
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
+    #[schema(value_type = Vec<Object>)]
     pub items: Vec<serde_json::Value>,
 }
 
