@@ -1229,7 +1229,11 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     if let Ok(expired) = db::get_expired_requests(&db_pool).await {
         for er in &expired {
             for sub in &er.subscribers {
-                if let Err(e) = app_state.ping_client.send_expired_ping(sub, &er.title).await {
+                if let Err(e) = app_state
+                    .ping_client
+                    .send_expired_ping(sub, &er.title)
+                    .await
+                {
                     tracing::error!(
                         "Failed to send expired ping to user {} for {}: {:?}",
                         sub,
@@ -1341,11 +1345,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                 .send_fulfilled_ping_body(&subscriber, &body)
                 .await
             {
-                tracing::error!(
-                    "Failed to send fulfilled ping to {}: {:?}",
-                    subscriber,
-                    e
-                );
+                tracing::error!("Failed to send fulfilled ping to {}: {:?}", subscriber, e);
             }
         }
     } else {

@@ -941,7 +941,10 @@ pub async fn item_exists_by_guid(pool: &PgPool, guid: &str) -> Result<bool, sqlx
     Ok(exists)
 }
 
-pub async fn get_request_by_id(pool: &PgPool, id: i32) -> Result<Option<MediaRequest>, sqlx::Error> {
+pub async fn get_request_by_id(
+    pool: &PgPool,
+    id: i32,
+) -> Result<Option<MediaRequest>, sqlx::Error> {
     sqlx::query_as!(
         MediaRequest,
         r#"
@@ -982,8 +985,13 @@ pub async fn create_or_subscribe_request(
           AND requested_season IS NOT DISTINCT FROM $3 
           AND requested_resolution IS NOT DISTINCT FROM $4
         "#,
-        payload.guid, payload.item_type, season, payload.requested_resolution
-    ).fetch_optional(&mut *tx).await?;
+        payload.guid,
+        payload.item_type,
+        season,
+        payload.requested_resolution
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
 
     let (request_id, is_new) = if let Some(id) = existing_id {
         (id, false)
@@ -1013,24 +1021,37 @@ pub async fn create_or_subscribe_request(
 }
 
 /// Unsubscribe a user from a request. Deletes the parent request if no subscribers are left.
-pub async fn unsubscribe_request(pool: &PgPool, request_id: i32, username: &str) -> Result<u64, sqlx::Error> {
+pub async fn unsubscribe_request(
+    pool: &PgPool,
+    request_id: i32,
+    username: &str,
+) -> Result<u64, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let res = sqlx::query!(
         "DELETE FROM media_request_subscribers WHERE request_id = $1 AND username = $2",
-        request_id, username
-    ).execute(&mut *tx).await?;
-    
+        request_id,
+        username
+    )
+    .execute(&mut *tx)
+    .await?;
+
     let rows_affected = res.rows_affected();
     if rows_affected > 0 {
         let count = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM media_request_subscribers WHERE request_id = $1", request_id
-        ).fetch_one(&mut *tx).await?.unwrap_or(0);
-        
+            "SELECT COUNT(*) FROM media_request_subscribers WHERE request_id = $1",
+            request_id
+        )
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or(0);
+
         if count == 0 {
-            sqlx::query!("DELETE FROM media_requests WHERE id = $1", request_id).execute(&mut *tx).await?;
+            sqlx::query!("DELETE FROM media_requests WHERE id = $1", request_id)
+                .execute(&mut *tx)
+                .await?;
         }
     }
-    
+
     tx.commit().await?;
     Ok(rows_affected)
 }
@@ -1048,7 +1069,10 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
 }
 
 /// Fetch active (pending) media requests for a specific guid.
-pub async fn get_active_requests_by_guid(pool: &PgPool, guid: &str) -> Result<Vec<MediaRequest>, sqlx::Error> {
+pub async fn get_active_requests_by_guid(
+    pool: &PgPool,
+    guid: &str,
+) -> Result<Vec<MediaRequest>, sqlx::Error> {
     let normalized = guid_for_item_lookup(guid);
     sqlx::query_as!(
         MediaRequest,
@@ -1185,9 +1209,7 @@ pub async fn is_movie_request_fulfilled(
             .fetch_optional(pool)
             .await?
             .flatten();
-            return Ok(Some(
-                res.unwrap_or_else(|| "Unknown".to_string()),
-            ));
+            return Ok(Some(res.unwrap_or_else(|| "Unknown".to_string())));
         }
         return Ok(None);
     }
@@ -1293,9 +1315,7 @@ pub async fn is_show_request_fulfilled(
         .fetch_optional(pool)
         .await?
         .flatten();
-        Ok(Some(
-            res.unwrap_or_else(|| "Unknown".to_string()),
-        ))
+        Ok(Some(res.unwrap_or_else(|| "Unknown".to_string())))
     } else {
         let res = sqlx::query_scalar!(
             r#"
@@ -1311,8 +1331,6 @@ pub async fn is_show_request_fulfilled(
         .fetch_optional(pool)
         .await?
         .flatten();
-        Ok(Some(
-            res.unwrap_or_else(|| "Unknown".to_string()),
-        ))
+        Ok(Some(res.unwrap_or_else(|| "Unknown".to_string())))
     }
 }

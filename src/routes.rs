@@ -474,9 +474,18 @@ async fn create_request_handler(
     req: HttpRequest,
     payload: web::Json<MediaRequestPayload>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .unwrap();
     let mut payload = payload.into_inner();
-    payload.guid = payload.guid.rsplit('/').next().unwrap_or(&payload.guid).to_string();
+    payload.guid = payload
+        .guid
+        .rsplit('/')
+        .next()
+        .unwrap_or(&payload.guid)
+        .to_string();
 
     let mut created_requests = Vec::new();
     let is_upgrade = db::item_exists_by_guid(&state.db_pool, &payload.guid).await?;
@@ -497,9 +506,14 @@ async fn create_request_handler(
     let mut needs_ping = false;
 
     for season in target_seasons {
-        let (request, is_new) =
-            db::create_or_subscribe_request(&state.db_pool, &username, &payload, season, is_upgrade)
-                .await?;
+        let (request, is_new) = db::create_or_subscribe_request(
+            &state.db_pool,
+            &username,
+            &payload,
+            season,
+            is_upgrade,
+        )
+        .await?;
         created_requests.push(request);
 
         if is_new {
@@ -590,11 +604,17 @@ async fn delete_request_handler(
     req: HttpRequest,
     path: web::Path<i32>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .unwrap();
     let id = path.into_inner();
     let rows = db::unsubscribe_request(&state.db_pool, id, &username).await?;
     if rows == 0 {
-        return Err(ApiError::NotFound("Not subscribed to this request".to_string()));
+        return Err(ApiError::NotFound(
+            "Not subscribed to this request".to_string(),
+        ));
     }
     Ok(HttpResponse::Ok().finish())
 }
@@ -611,7 +631,11 @@ async fn subscribe_request_handler(
     req: HttpRequest,
     path: web::Path<i32>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .unwrap();
     let request_id = path.into_inner();
     sqlx::query!("INSERT INTO media_request_subscribers (request_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING", request_id, username).execute(&state.db_pool).await?;
     Ok(HttpResponse::Ok().finish())
@@ -629,12 +653,18 @@ async fn unsubscribe_request_handler(
     req: HttpRequest,
     path: web::Path<i32>,
 ) -> Result<impl Responder, ApiError> {
-    let username = req.extensions().get::<User>().map(|u| u.preferred_username.clone()).unwrap();
+    let username = req
+        .extensions()
+        .get::<User>()
+        .map(|u| u.preferred_username.clone())
+        .unwrap();
     let id = path.into_inner();
     let rows_affected = db::unsubscribe_request(&state.db_pool, id, &username).await?;
-    
+
     if rows_affected == 0 {
-        return Err(ApiError::NotFound("Not subscribed to this request".to_string()));
+        return Err(ApiError::NotFound(
+            "Not subscribed to this request".to_string(),
+        ));
     }
     Ok(HttpResponse::Ok().finish())
 }
