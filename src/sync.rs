@@ -145,7 +145,7 @@ async fn flush_item_buffer(
                 attempts += 1;
                 if attempts >= MAX_ATTEMPTS {
                     tracing::error!(
-                        "batch flush failed after retries count={} attempts={} error={:?}",
+                        "Batch flush failed after retries count={} attempts={} error={:?}",
                         count,
                         MAX_ATTEMPTS,
                         e
@@ -155,7 +155,7 @@ async fn flush_item_buffer(
 
                 let backoff = Duration::from_secs(2u64.pow(attempts));
                 tracing::warn!(
-                    "batch upsert failed attempt={}/{} retry_in={:?} error={:?}",
+                    "Batch upsert failed attempt={}/{} retry_in={:?} error={:?}",
                     attempts,
                     MAX_ATTEMPTS,
                     backoff,
@@ -230,7 +230,7 @@ async fn sync_extras_for_parent(
         .collect();
     if let Err(e) = db::upsert_items_batch(db_pool, &items, sync_time).await {
         tracing::warn!(
-            "extras upsert failed count={} parent={} error={:?}",
+            "Extras upsert failed count={} parent={} error={:?}",
             items.len(),
             parent_rating_key,
             e
@@ -285,7 +285,7 @@ async fn process_media_parts(
                                 db::upsert_stream(&db_p, stream, part_id, &s_id, sync_time).await
                             {
                                 tracing::error!(
-                                    "stream upsert failed part={} error={:?}",
+                                    "Stream upsert failed part={} error={:?}",
                                     part_id,
                                     e
                                 );
@@ -314,7 +314,7 @@ async fn process_discovery_task(
     let _permit = match state.sync_semaphore.acquire().await {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!("sync semaphore closed error={:?}", e);
+            tracing::error!("Sync semaphore closed error={:?}", e);
             pending_work.fetch_sub(1, Ordering::Relaxed);
             return;
         }
@@ -348,7 +348,7 @@ async fn process_discovery_task(
                 )
                 .await
                 {
-                    tracing::error!("touch tree failed item={} error={:?}", item.title, e);
+                    tracing::error!("Touch tree failed item={} error={:?}", item.title, e);
                 }
 
                 pending_work.fetch_sub(1, Ordering::Relaxed);
@@ -367,7 +367,7 @@ async fn process_discovery_task(
             if let Err(e) = flush_item_buffer(item_buffer.clone(), &state.db_pool, sync_time).await
             {
                 tracing::error!(
-                    "parent flush failed item={} type={} error={:?}",
+                    "Parent flush failed item={} type={} error={:?}",
                     item.title,
                     item.item_type,
                     e
@@ -420,7 +420,7 @@ async fn process_discovery_task(
                                     .await
                             {
                                 tracing::error!(
-                                    "season flush failed show={} error={:?}",
+                                    "Season flush failed show={} error={:?}",
                                     item.title,
                                     e
                                 );
@@ -456,7 +456,7 @@ async fn process_discovery_task(
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     } else {
-                        tracing::warn!("seasons fetch failed show={}", item.title);
+                        tracing::warn!("Seasons fetch failed show={}", item.title);
                     }
 
                     let leaves_result = state
@@ -513,7 +513,7 @@ async fn process_discovery_task(
                                     .await
                             {
                                 tracing::error!(
-                                    "episode flush failed show={} error={:?}",
+                                    "Episode flush failed show={} error={:?}",
                                     item.title,
                                     e
                                 );
@@ -552,11 +552,11 @@ async fn process_discovery_task(
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
                                 total_tasks_created.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("episode detail queue send failed");
+                                tracing::error!("Episode detail queue send failed");
                             }
                         }
                     } else {
-                        tracing::warn!("episodes fetch failed show={}", item.title);
+                        tracing::warn!("Episodes fetch failed show={}", item.title);
                     }
                 }
                 "season" => {
@@ -604,7 +604,7 @@ async fn process_discovery_task(
                             {
                                 pending_work.fetch_sub(1, Ordering::Relaxed);
                                 total_tasks_created.fetch_sub(1, Ordering::Relaxed);
-                                tracing::error!("detail queue send failed");
+                                tracing::error!("Detail queue send failed");
                             }
                         }
                     } else {
@@ -623,7 +623,7 @@ async fn process_discovery_task(
                         {
                             pending_work.fetch_sub(1, Ordering::Relaxed);
                             total_tasks_created.fetch_sub(1, Ordering::Relaxed);
-                            tracing::error!("detail queue send failed");
+                            tracing::error!("Detail queue send failed");
                         }
                     }
                 }
@@ -647,7 +647,7 @@ async fn process_detail_task(
     let _permit = match state.sync_semaphore.acquire().await {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!("sync semaphore closed error={:?}", e);
+            tracing::error!("Sync semaphore closed error={:?}", e);
             pending_work.fetch_sub(1, Ordering::Relaxed);
             return;
         }
@@ -691,7 +691,7 @@ async fn process_detail_task(
                                         .await
                                         {
                                             tracing::error!(
-                                                "stream upsert failed part={} error={:?}",
+                                                "Stream upsert failed part={} error={:?}",
                                                 part_id,
                                                 e
                                             );
@@ -704,7 +704,7 @@ async fn process_detail_task(
                 }
             } else {
                 tracing::warn!(
-                    "item details missing type={} key={}",
+                    "Item details missing type={} key={}",
                     item.item_type,
                     item.title
                 );
@@ -1101,18 +1101,18 @@ async fn sync_server(
                     tracing::error!(
                         library = %library.title,
                         error = ?e,
-                        "final buffer flush failed"
+                        "Final buffer flush failed"
                     );
                 }
             } else {
                 tracing::error!(
                     library = %library.title,
-                    "library items fetch failed"
+                    "Library items fetch failed"
                 );
             }
         }
     }
-    tracing::info!(server = %server.name, "server sync done");
+    tracing::info!(server = %server.name, "Server sync done!");
 }
 
 async fn run_database_sync(app_state: &web::Data<AppState>) {
@@ -1121,21 +1121,21 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     let client = app_state.plex_client.clone();
     let db_pool = app_state.db_pool.clone();
 
-    tracing::info!("sync run start at={}", sync_start_time);
+    tracing::info!("Sync run start at={}", sync_start_time);
 
     if let Err(e) = db::set_sync_metadata(&db_pool, true, None).await {
-        tracing::error!("set sync_in_progress failed error={:?}", e);
+        tracing::error!("Set sync_in_progress failed error={:?}", e);
     }
 
     if let Err(e) = client.ensure_logged_in().await {
-        tracing::error!("plex login failed; sync aborted error={:?}", e);
+        tracing::error!("Plex login failed; sync aborted error={:?}", e);
         let _ = db::set_sync_metadata(&db_pool, false, Some(&format!("Plex login failed: {}", e)))
             .await;
         return;
     }
 
     if let Ok(servers) = client.get_servers().await {
-        tracing::info!("servers to sync count={}", servers.len());
+        tracing::info!("Servers to sync count={}", servers.len());
         stream::iter(servers)
             .for_each_concurrent(1, |server| {
                 sync_server(
@@ -1148,7 +1148,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
             })
             .await;
     } else {
-        tracing::error!("plex server list fetch failed");
+        tracing::error!("Plex server list fetch failed");
         let _ = db::set_sync_metadata(
             &db_pool,
             false,
@@ -1160,16 +1160,16 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     // Checks if Plex API is reachable before pruning so it doesn't empty the database if
     // the Plex API is unreachable during a sync.
-    tracing::info!("sync ingest done; checking plex before prune");
+    tracing::info!("Sync ingest done; checking Plex before prune");
     if let Err(e) = client.check_connectivity().await {
         tracing::error!(
-            "plex unreachable before prune; aborting prune error={:?}",
+            "Plex unreachable before prune; aborting prune error={:?}",
             e
         );
         if let Err(db_err) = db::set_sync_metadata(
             &db_pool,
             false,
-            Some("Plex API Unreachable - prune aborted to preserve local data"),
+            Some("Plex API unreachable - prune aborted to preserve local data"),
         )
         .await
         {
@@ -1178,12 +1178,12 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         return;
     }
 
-    tracing::info!("pruning stale rows");
+    tracing::info!("Pruning stale rows");
     if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
-        tracing::error!("prune failed error={:?}", e);
+        tracing::error!("Pruning failed error={:?}", e);
     }
 
-    tracing::info!("checking media requests");
+    tracing::info!("Checking media requests");
 
     if let Ok(expired) = db::get_expired_requests(&db_pool).await {
         for er in &expired {
@@ -1194,7 +1194,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                     .await
                 {
                     tracing::error!(
-                        "expired ping failed user={} title={} error={:?}",
+                        "Expired ping failed user={} title={} error={:?}",
                         sub,
                         er.title,
                         e
@@ -1204,18 +1204,18 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         }
         if let Ok(deleted) = db::delete_expired_requests(&db_pool).await {
             if deleted > 0 {
-                tracing::info!("deleted expired requests count={}", deleted);
+                tracing::info!("Deleted expired requests count={}", deleted);
             }
         }
     } else {
-        tracing::warn!("expired requests fetch failed");
+        tracing::warn!("Expired requests fetch failed!");
     }
 
     if let Ok(pending) = db::get_pending_requests(&db_pool).await {
         if pending.is_empty() {
-            tracing::info!("no pending requests");
+            tracing::info!("No pending requests.");
         } else {
-            tracing::info!("checking pending requests count={}", pending.len());
+            tracing::info!("Checking pending requests count={}", pending.len());
         }
 
         let mut fulfilled_for_pings: Vec<(MediaRequest, String, Vec<String>)> = Vec::new();
@@ -1239,10 +1239,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
             if let Ok(Some(actual_res)) = fulfilled_resolution {
                 if let Err(e) = db::mark_request_fulfilled(&db_pool, req.id).await {
-                    tracing::warn!("mark fulfilled failed id={} error={:?}", req.id, e);
+                    tracing::warn!("Mark fulfilled failed id={} error={:?}", req.id, e);
                 } else {
                     tracing::info!(
-                        "request fulfilled title={} id={} subscribers={:?}",
+                        "Request fulfilled title={} id={} subscribers={:?}",
                         req.title,
                         req.id,
                         req.subscribers
