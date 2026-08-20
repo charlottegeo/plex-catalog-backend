@@ -1948,7 +1948,6 @@ dependencies = [
  "futures",
  "isahc",
  "lazy_static",
- "log",
  "moka",
  "once_cell",
  "openssl",
