@@ -51,12 +51,9 @@ pub struct ItemWithContext {
 }
 
 pub async fn get_all_servers(pool: &PgPool) -> Result<Vec<DbServer>, sqlx::Error> {
-    sqlx::query_as!(
-        DbServer,
-        "SELECT * FROM servers ORDER BY is_online DESC, name"
-    )
-    .fetch_all(pool)
-    .await
+    sqlx::query_as!(DbServer, "SELECT * FROM servers ORDER BY status ASC, name")
+        .fetch_all(pool)
+        .await
 }
 
 pub async fn get_system_info(
@@ -70,8 +67,8 @@ pub async fn get_system_info(
             (SELECT last_updated FROM sync_metadata WHERE id = 1) AS last_updated,
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'movie' AND guid IS NOT NULL) AS total_movies,
             (SELECT COUNT(DISTINCT guid) FROM items WHERE item_type = 'show' AND guid IS NOT NULL) AS total_shows,
-            (SELECT COUNT(*) FROM servers WHERE is_online = TRUE) AS online_servers,
-            (SELECT COUNT(*) FROM servers WHERE is_online = FALSE) AS offline_servers,
+            (SELECT COUNT(*) FROM servers WHERE status = 0) AS online_servers,
+            (SELECT COUNT(*) FROM servers WHERE status <> 0) AS offline_servers,
             (SELECT last_error FROM sync_metadata WHERE id = 1) AS last_error,
             COALESCE((SELECT sync_in_progress FROM sync_metadata WHERE id = 1), false) AS sync_in_progress
         "#,
@@ -267,27 +264,32 @@ pub async fn get_library_items_total(
     .await
 }
 
+/// Upsert a server row. "status_since" stays the same when the non-online status is unchanged.
+/// "connection_uri" is the URI that successfully connected (or the first remote / empty when none).
 pub async fn upsert_server(
     pool: &PgPool,
     server: &Device,
-    is_online: bool,
+    status: i16,
+    connection_uri: &str,
     sync_time: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
     let access_token = server.access_token.as_deref().unwrap_or_default();
     let owner_username = server.source_title.as_deref();
-    let connection_uri = server
-        .connections
-        .iter()
-        .find(|c| !c.local)
-        .map_or("", |c| &c.uri);
-
     sqlx::query!(
         r#"
-        INSERT INTO servers (id, name, owner_username, access_token, connection_uri, last_seen, is_online)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO servers (id, name, owner_username, access_token, connection_uri, last_seen, status, status_since)
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            CASE WHEN $7 = 0 THEN NULL ELSE $6 END
+        )
         ON CONFLICT (id) DO UPDATE SET
             last_seen = EXCLUDED.last_seen,
-            is_online = EXCLUDED.is_online,
+            status = EXCLUDED.status,
+            status_since = CASE
+                WHEN EXCLUDED.status = 0 THEN NULL
+                WHEN servers.status = EXCLUDED.status THEN servers.status_since
+                ELSE EXCLUDED.last_seen
+            END,
             name = CASE WHEN servers.name IS DISTINCT FROM EXCLUDED.name THEN EXCLUDED.name ELSE servers.name END,
             owner_username = CASE WHEN servers.owner_username IS DISTINCT FROM EXCLUDED.owner_username THEN EXCLUDED.owner_username ELSE servers.owner_username END,
             access_token = CASE WHEN servers.access_token IS DISTINCT FROM EXCLUDED.access_token THEN EXCLUDED.access_token ELSE servers.access_token END,
@@ -299,7 +301,7 @@ pub async fn upsert_server(
         access_token,
         connection_uri,
         sync_time,
-        is_online
+        status
     )
     .execute(pool)
     .await?;
@@ -588,7 +590,7 @@ pub async fn prune_old_data(
     pool: &PgPool,
     sync_start_time: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    tracing::debug!("Pruning old data from database...");
+    tracing::debug!("Pruning stale rows...");
     let streams_deleted = sqlx::query!("DELETE FROM streams WHERE last_seen < $1", sync_start_time)
         .execute(pool)
         .await?
@@ -616,12 +618,12 @@ pub async fn prune_old_data(
         .await?
         .rows_affected();
     tracing::info!(
-        "Pruning complete. Pruned: {} servers, {} libraries, {} items, {} parts, {} streams.",
-        servers_deleted,
-        libraries_deleted,
-        items_deleted,
-        parts_deleted,
-        streams_deleted
+        servers = servers_deleted,
+        libraries = libraries_deleted,
+        items = items_deleted,
+        parts = parts_deleted,
+        streams = streams_deleted,
+        "Pruning complete!"
     );
     Ok(())
 }
@@ -950,7 +952,7 @@ pub async fn get_request_by_id(
         r#"
         SELECT
             mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season,
-            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at,
+            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.fulfilled_at,
             mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
             ARRAY[]::TEXT[] as "server_names: Vec<String>",
             (
@@ -1061,7 +1063,7 @@ pub async fn get_pending_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sq
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at,
+        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at, fulfilled_at,
         (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as "subscribers!: Vec<String>"
         FROM media_requests WHERE status = 'pending' ORDER BY created_at ASC
         "#
@@ -1077,7 +1079,7 @@ pub async fn get_active_requests_by_guid(
     sqlx::query_as!(
         MediaRequest,
         r#"
-        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at,
+        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as "server_names: Vec<String>", status, created_at, updated_at, fulfilled_at,
         (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as "subscribers!: Vec<String>"
         FROM media_requests WHERE status = 'pending' AND guid = $1 ORDER BY created_at ASC
         "#,
@@ -1085,23 +1087,51 @@ pub async fn get_active_requests_by_guid(
     ).fetch_all(pool).await
 }
 
-/// Fetch all media requests (both pending and fulfilled).
-pub async fn get_all_requests(pool: &PgPool) -> Result<Vec<MediaRequest>, sqlx::Error> {
-    sqlx::query_as!(
-        MediaRequest,
+/// Fetch media requests with optional status filter and date sorting.
+pub async fn get_all_requests(
+    pool: &PgPool,
+    status_filter: Option<&str>,
+    sort_by: &str,
+    sort_desc: bool,
+) -> Result<Vec<MediaRequest>, sqlx::Error> {
+    let status_clause = match status_filter {
+        Some("pending") => "AND mr.status = 'pending'",
+        Some("fulfilled") => "AND mr.status = 'fulfilled'",
+        _ => "",
+    };
+
+    let order_clause = match (sort_by, sort_desc) {
+        ("fulfilledAt", true) => "ORDER BY mr.fulfilled_at DESC NULLS LAST, mr.created_at DESC",
+        ("fulfilledAt", false) => "ORDER BY mr.fulfilled_at ASC NULLS LAST, mr.created_at ASC",
+        (_, true) => {
+            "ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at DESC"
+        }
+        (_, false) => {
+            "ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at ASC"
+        }
+    };
+
+    let sql = format!(
         r#"
-        SELECT mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season, mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
-        (SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[]) FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = mr.guid) as "server_names: Vec<String>",
-        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id) as "subscribers!: Vec<String>"
-        FROM media_requests mr ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at DESC
+        SELECT mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season, mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.fulfilled_at, mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,
+        (SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[]) FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = mr.guid) as server_names,
+        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id) as subscribers
+        FROM media_requests mr
+        WHERE 1=1 {status_clause}
+        {order_clause}
         "#
-    ).fetch_all(pool).await
+    );
+
+    let rows = sqlx::query_as::<_, MediaRequest>(&sql)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
 }
 
 /// Mark a media request as fulfilled.
 pub async fn mark_request_fulfilled(pool: &PgPool, id: i32) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "UPDATE media_requests SET status = 'fulfilled', updated_at = NOW() WHERE id = $1",
+        "UPDATE media_requests SET status = 'fulfilled', updated_at = NOW(), fulfilled_at = NOW() WHERE id = $1",
         id
     )
     .execute(pool)
@@ -1109,13 +1139,13 @@ pub async fn mark_request_fulfilled(pool: &PgPool, id: i32) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Delete expired/outdated requests: pending > 30 days by created_at, fulfilled > 30 days by updated_at.
+/// Delete expired requests: pending removed at 30d after created_at, fulfilled removed at 30d after fulfilled_at.
 pub async fn delete_expired_requests(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result: sqlx::postgres::PgQueryResult = sqlx::query!(
         r#"
         DELETE FROM media_requests
         WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')
-           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')
+           OR (status = 'fulfilled' AND COALESCE(fulfilled_at, updated_at) < NOW() - INTERVAL '30 days')
         "#
     )
     .execute(pool)
@@ -1155,7 +1185,7 @@ pub async fn get_expired_requests(pool: &PgPool) -> Result<Vec<ExpiredRequest>, 
         ) as "subscribers!"
         FROM media_requests mr
         WHERE (status = 'pending' AND created_at < NOW() - INTERVAL '30 days')
-           OR (status = 'fulfilled' AND updated_at < NOW() - INTERVAL '30 days')
+           OR (status = 'fulfilled' AND COALESCE(fulfilled_at, updated_at) < NOW() - INTERVAL '30 days')
         "#
     )
     .fetch_all(pool)

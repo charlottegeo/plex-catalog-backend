@@ -5,7 +5,8 @@ use crate::{
     error::ApiError,
     models::{
         DbServer, DiscoverResultsPage, GlobalImageQuery, ImageQuery, LibraryItemsPage,
-        LibraryItemsQuery, MediaRequest, MediaRequestPayload, SearchQuery, SearchResultsPage,
+        LibraryItemsQuery, MediaRequest, MediaRequestPayload, RequestsQuery, SearchQuery,
+        SearchResultsPage,
     },
     AppState,
 };
@@ -53,7 +54,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
 /// List all Plex servers known to the catalog.
 ///
-/// Returns servers from the PostgreSQL database. Includes connection info and online status.
+/// Each server includes "status" / "statusSince" (see "server_status" module).
 #[utoipa::path(
     get,
     path = "/api/servers",
@@ -242,7 +243,7 @@ async fn get_item_children_handler(
 
 /// Proxy or resize an image from a Plex server.
 ///
-/// Images are cached. Optional `width` and `height` query params trigger transcoding to that size.
+/// Images are cached. Optional "width" and "height" query params trigger transcoding to that size.
 #[utoipa::path(
     get,
     path = "/api/servers/{server_id}/image/{image_path}",
@@ -563,15 +564,32 @@ async fn create_request_handler(
     Ok(HttpResponse::Ok().json(created_requests))
 }
 
-/// List all media requests (both pending and fulfilled).
+/// List media requests (pending and/or fulfilled), optionally filtered and sorted by date.
 #[utoipa::path(
     get,
     path = "/api/requests",
-    responses((status = 200, description = "List of all requests", body = Vec<MediaRequest>))
+    params(
+        ("status" = Option<String>, Query, description = "Filter: pending | fulfilled"),
+        ("sortBy" = Option<String>, Query, description = "createdAt (default) | fulfilledAt"),
+        ("sortOrder" = Option<String>, Query, description = "asc | desc (default desc)")
+    ),
+    responses((status = 200, description = "List of requests", body = Vec<MediaRequest>))
 )]
 #[get("/requests")]
-async fn get_all_requests_handler(state: web::Data<AppState>) -> Result<impl Responder, ApiError> {
-    let requests = db::get_all_requests(&state.db_pool).await?;
+async fn get_all_requests_handler(
+    state: web::Data<AppState>,
+    query: web::Query<RequestsQuery>,
+) -> Result<impl Responder, ApiError> {
+    let status_filter = query.status.as_deref().and_then(|s| match s {
+        "pending" | "fulfilled" => Some(s),
+        _ => None,
+    });
+    let sort_by = match query.sort_by.as_deref() {
+        Some("fulfilledAt") => "fulfilledAt",
+        _ => "createdAt",
+    };
+    let sort_desc = !matches!(query.sort_order.as_deref(), Some("asc"));
+    let requests = db::get_all_requests(&state.db_pool, status_filter, sort_by, sort_desc).await?;
     Ok(HttpResponse::Ok().json(requests))
 }
 
@@ -736,7 +754,7 @@ async fn get_media_details_handler(
     ),
     responses(
         (status = 200, description = "List of seasons", body = Vec<SeasonSummary>),
-        (status = 404, description = "Server not found")
+        (status = 404, description = "Server or show not found")
     )
 )]
 #[get("/servers/{server_id}/shows/{show_id}/seasons")]
@@ -751,7 +769,7 @@ async fn get_seasons_handler(
 
 /// List episodes for a season.
 ///
-/// Returns episodes from the catalog with version and subtitle info. Season_id can be a season rating key or the show rating key when there are no seasons.
+/// Returns episodes from the catalog with resolution and subtitle info. Season_id can be a season rating key or the show rating key when there are no seasons (like a mini-series)
 #[utoipa::path(
     get,
     path = "/api/servers/{server_id}/seasons/{season_id}/episodes",
@@ -761,7 +779,7 @@ async fn get_seasons_handler(
     ),
     responses(
         (status = 200, description = "List of episodes", body = Vec<EpisodeDetails>),
-        (status = 404, description = "Server not found")
+        (status = 404, description = "Server or season not found")
     )
 )]
 #[get("/servers/{server_id}/seasons/{season_id}/episodes")]

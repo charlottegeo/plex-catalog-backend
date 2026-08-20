@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season, mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n        (SELECT COALESCE(array_agg(DISTINCT s.name), ARRAY[]::TEXT[]) FROM items i JOIN servers s ON i.server_id = s.id WHERE i.guid = mr.guid) as \"server_names: Vec<String>\",\n        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = mr.id) as \"subscribers!: Vec<String>\"\n        FROM media_requests mr ORDER BY CASE WHEN mr.status = 'pending' THEN 0 ELSE 1 END, mr.created_at DESC\n        ",
+  "query": "\n        SELECT\n            mr.id, mr.guid, mr.title, mr.item_type, mr.requested_season,\n            mr.requested_resolution, mr.status, mr.created_at, mr.updated_at, mr.fulfilled_at,\n            mr.is_upgrade, mr.thumb, mr.year, mr.duration, mr.is_viewed,\n            ARRAY[]::TEXT[] as \"server_names: Vec<String>\",\n            (\n                SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[])\n                FROM media_request_subscribers mrs\n                WHERE mrs.request_id = mr.id\n            ) as \"subscribers!: Vec<String>\"\n        FROM media_requests mr\n        WHERE mr.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -50,42 +50,49 @@
       },
       {
         "ordinal": 9,
+        "name": "fulfilled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
         "name": "is_upgrade",
         "type_info": "Bool"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "thumb",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "year",
         "type_info": "Int4"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "duration",
         "type_info": "Int8"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "is_viewed",
         "type_info": "Bool"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "server_names: Vec<String>",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "subscribers!: Vec<String>",
         "type_info": "VarcharArray"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Int4"
+      ]
     },
     "nullable": [
       false,
@@ -97,6 +104,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -106,5 +114,5 @@
       null
     ]
   },
-  "hash": "e46fad6a8d7f16c1d71db12e1ef4a6f854512a0cbe0b7b2e1ecd465e85ca9a2b"
+  "hash": "9d9ff3a8fa176d6d2e43d92fe3abd3ea6f297c147fefef4ea5b78ef538a926f1"
 }

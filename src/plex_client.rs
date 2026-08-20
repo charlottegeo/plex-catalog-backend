@@ -1,3 +1,4 @@
+/// HTTP client for plex.tv and remote Plex servers
 use crate::models::{
     Device, ItemList, ItemMediaContainer, ItemWithDetails, LibraryList, LibraryMediaContainer,
     LoginResponse, PlexExtra, SingleItemMediaContainer,
@@ -18,10 +19,20 @@ pub struct PlexClient {
 impl PlexClient {
     pub fn new() -> Self {
         let client_identifier = String::from("rust-plex-catalog-backend-uuid");
+
+        let connect_secs = std::env::var("SERVER_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15u64);
+        let request_secs = std::env::var("SERVER_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60u64);
+
         let http_client = ClientBuilder::new()
-            .danger_accept_invalid_certs(true)
-            .connect_timeout(Duration::from_secs(60))
-            .timeout(Duration::from_secs(300))
+            .danger_accept_invalid_certs(false)
+            .connect_timeout(Duration::from_secs(connect_secs))
+            .timeout(Duration::from_secs(request_secs))
             .build()
             .expect("Failed to build reqwest client");
 
@@ -36,7 +47,7 @@ impl PlexClient {
         if self.auth_token.read().await.is_some() {
             return Ok(());
         }
-        tracing::info!("PlexClient is not logged in. Authenticating...");
+        tracing::info!("Plex login required.");
         let username = std::env::var("PLEX_USERNAME").expect("PLEX_USERNAME must be set");
         let password = std::env::var("PLEX_PASSWORD").expect("PLEX_PASSWORD must be set");
 
@@ -58,7 +69,7 @@ impl PlexClient {
         let mut token_lock = self.auth_token.write().await;
         *token_lock = Some(login_data.user.auth_token);
 
-        tracing::debug!("Authentication successful.");
+        tracing::debug!("Plex login OK!");
         Ok(())
     }
 
@@ -66,7 +77,7 @@ impl PlexClient {
         let token_lock = self.auth_token.read().await;
         let token = token_lock
             .as_ref()
-            .expect("get_servers called before login");
+            .expect("get_servers called before login.");
 
         let response = self
             .http_client
@@ -183,8 +194,7 @@ impl PlexClient {
         Ok(())
     }
 
-    /// Fetches extras for a media item (movie, show, season, episode) from the metadata endpoint with includeExtras=1.
-    /// Extras are embedded in MediaContainer.Metadata[0].Extras.Metadata
+    /// Extras live under MediaContainer.Metadata[0].Extras.Metadata (not separate library items)
     pub async fn get_item_extras(
         &self,
         server_uri: &str,
@@ -298,10 +308,7 @@ impl PlexClient {
             .await?;
 
         if !response.status().is_success() {
-            tracing::warn!(
-                "Plex Discover API returned non-success status: {}",
-                response.status()
-            );
+            tracing::warn!(status = %response.status(), "Discover API failed.");
             return Ok(serde_json::json!({
                 "MediaContainer": { "Metadata": [] }
             }));
@@ -311,7 +318,7 @@ impl PlexClient {
         let json: serde_json::Value = match serde_json::from_str(&text_response) {
             Ok(j) => j,
             Err(e) => {
-                tracing::error!("Failed to parse Plex Discover JSON: {}", e);
+                tracing::error!(error = %e, "Discover JSON parse failed.");
                 return Ok(serde_json::json!({ "MediaContainer": { "Metadata": [] } }));
             }
         };

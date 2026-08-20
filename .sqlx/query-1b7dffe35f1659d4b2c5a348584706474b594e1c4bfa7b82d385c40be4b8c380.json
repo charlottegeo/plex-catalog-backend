@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as \"server_names: Vec<String>\", status, created_at, updated_at,\n        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as \"subscribers!: Vec<String>\"\n        FROM media_requests WHERE status = 'pending' ORDER BY created_at ASC\n        ",
+  "query": "\n        SELECT id, guid, title, item_type, requested_season, requested_resolution, is_upgrade, thumb, is_viewed, year, duration, ARRAY[]::TEXT[] as \"server_names: Vec<String>\", status, created_at, updated_at, fulfilled_at,\n        (SELECT COALESCE(array_agg(DISTINCT mrs.username), ARRAY[]::TEXT[]) FROM media_request_subscribers mrs WHERE mrs.request_id = media_requests.id) as \"subscribers!: Vec<String>\"\n        FROM media_requests WHERE status = 'pending' ORDER BY created_at ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -80,6 +80,11 @@
       },
       {
         "ordinal": 15,
+        "name": "fulfilled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
         "name": "subscribers!: Vec<String>",
         "type_info": "VarcharArray"
       }
@@ -103,8 +108,9 @@
       false,
       false,
       false,
+      true,
       null
     ]
   },
-  "hash": "8931278095afa5a8d8ab13fc8976f76c03fd508b49113197f3005bfbbab370d0"
+  "hash": "1b7dffe35f1659d4b2c5a348584706474b594e1c4bfa7b82d385c40be4b8c380"
 }

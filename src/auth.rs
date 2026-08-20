@@ -7,7 +7,6 @@ use base64::{engine::general_purpose, Engine as _};
 use futures::{executor::block_on, future::LocalBoxFuture};
 use isahc::ReadResponseExt;
 use lazy_static::lazy_static;
-use log::{log, Level};
 use openssl::{
     bn::BigNum,
     hash::MessageDigest,
@@ -142,7 +141,7 @@ fn verify_token(
         Some(x) => Some(x),
         None => {
             if let Err(e) = update_cache(&mut cache) {
-                log!(Level::Error, "Failed to update JWKS cache: {e:?}");
+                tracing::error!(error = ?e, "JWKS cache update failed");
                 None
             } else {
                 cache.get(header.kid.as_str())
@@ -294,7 +293,7 @@ where
             ) = match get_token_pieces(token) {
                 Ok(x) => x,
                 Err(e) => {
-                    log!(Level::Debug, "Token is formatted incorrectly: {e}");
+                    tracing::debug!(error = %e, "Token format invalid");
                     return unauthorized(req);
                 }
             };

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE media_requests SET status = 'fulfilled', updated_at = NOW(), fulfilled_at = NOW() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0d44b1edd088afc3fc689aaaa5f1663d3758f06bb99cf8dcce764ec55284acf3"
+}

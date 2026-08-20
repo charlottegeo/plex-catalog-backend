@@ -6,6 +6,7 @@ pub enum ApiError {
     PlexRequestFailed(reqwest::Error),
     DbError(sqlx::Error),
     NotFound(String),
+    #[allow(dead_code)]
     Unauthorized(String),
 }
 

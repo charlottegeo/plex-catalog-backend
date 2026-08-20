@@ -17,20 +17,20 @@ where
     }))
 }
 
-/// Plex user with authentication token.
+/// Plex account payload returned by sign-in
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
-pub struct User {
+pub struct PlexUser {
     #[serde(rename = "authToken")]
     pub auth_token: String,
 }
 
-/// Plex sign-in response containing user info.
+/// Plex sign-in response containing user info
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct LoginResponse {
-    pub user: User,
+    pub user: PlexUser,
 }
 
-/// Plex device (server) with information needed to connect to the server.
+/// Plex device (server) with information needed to connect to the server
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Device {
     pub name: String,
@@ -45,7 +45,7 @@ pub struct Device {
     pub connections: Vec<Connection>,
 }
 
-/// Plex server connection URI, and whether it is a local connection.
+/// Plex server connection URI, and whether it is a local connection
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Connection {
     pub uri: String,
@@ -64,7 +64,7 @@ pub struct LibraryList {
     pub libraries: Vec<Library>,
 }
 
-/// Plex library section (movies, shows, etc).
+/// Plex library section (movies, shows, etc)
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Library {
     pub key: String,
@@ -85,7 +85,7 @@ pub struct ItemList {
     pub items: Vec<Item>,
 }
 
-/// Plex library item (movie, show, episode, extra, etc).
+/// Plex library item (movie, show, episode, extra, etc)
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Item {
     pub guid: Option<String>,
@@ -124,12 +124,12 @@ pub struct Item {
     pub originally_available_at: Option<NaiveDate>,
     #[serde(default)]
     pub studio: Option<String>,
-    /// Plex extra type (e.g. "trailer", "behindTheScenes") when item_type is "extra".
+    /// Plex extra type (e.g. "trailer", "behindTheScenes") when item_type is "extra"
     #[serde(rename = "extraType", default)]
     pub extra_type: Option<String>,
 }
 
-/// Single bonus feature/extra from the database.
+/// Single bonus feature/extra from the database
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlexExtra {
@@ -137,7 +137,7 @@ pub struct PlexExtra {
     pub rating_key: Option<String>,
     pub title: String,
     pub key: String,
-    /// Plex extra type (e.g. "trailer", "behindTheScenes", "deleted_scene").
+    /// Plex extra type (e.g. "trailer", "behindTheScenes", "deleted_scene")
     #[serde(rename = "extraType")]
     pub extra_type: Option<String>,
     pub thumb: Option<String>,
@@ -240,11 +240,15 @@ pub struct SystemInfo {
 #[serde(rename_all = "camelCase")]
 pub struct DbServer {
     pub id: String,
-    /// Server name/nickname.
+    /// Server name/nickname
     pub name: String,
-    /// Plex owner username (Plex's `sourceTitle`).
+    /// Plex owner username (Plex's "sourceTitle")
     pub owner_username: Option<String>,
-    pub is_online: bool,
+    /// Availability: 0 = online, 1 = unreachable, 2 = timeout, 3 = tls, 4 = no connection, 5 = http error
+    pub status: i16,
+    /// When the current non-online status began; null while online
+    #[schema(value_type = Option<String>)]
+    pub status_since: Option<DateTime<Utc>>,
     pub access_token: String,
     pub connection_uri: String,
     #[schema(value_type = String)]
@@ -404,13 +408,6 @@ impl From<DbServer> for Device {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, ToSchema)]
-#[allow(dead_code)]
-pub struct PingsBody {
-    pub username: String,
-    pub body: String,
-}
-
 /// Payload for creating/updating a media request.
 #[derive(Serialize, Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -425,7 +422,19 @@ pub struct MediaRequestPayload {
     pub duration: Option<i64>,
 }
 
-/// Media request from the database.
+/// Query params for listing media requests
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestsQuery {
+    /// Filter: "pending", "fulfilled", or omit for all
+    pub status: Option<String>,
+    /// "createdAt" (default) or "fulfilledAt"
+    pub sort_by: Option<String>,
+    /// "asc" or "desc" (default "desc")
+    pub sort_order: Option<String>,
+}
+
+/// Media request from the database
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaRequest {
@@ -446,5 +455,7 @@ pub struct MediaRequest {
     pub created_at: DateTime<Utc>,
     #[schema(value_type = String)]
     pub updated_at: DateTime<Utc>,
+    #[schema(value_type = Option<String>)]
+    pub fulfilled_at: Option<DateTime<Utc>>,
     pub subscribers: Vec<String>,
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM servers ORDER BY is_online DESC, name",
+  "query": "SELECT * FROM servers ORDER BY status ASC, name",
   "describe": {
     "columns": [
       {
@@ -30,13 +30,18 @@
       },
       {
         "ordinal": 5,
-        "name": "is_online",
-        "type_info": "Bool"
+        "name": "owner_username",
+        "type_info": "Varchar"
       },
       {
         "ordinal": 6,
-        "name": "owner_username",
-        "type_info": "Varchar"
+        "name": "status",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "status_since",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -48,9 +53,10 @@
       false,
       false,
       false,
+      true,
       false,
       true
     ]
   },
-  "hash": "16d67824d8e6b6d940e111e0817f421216e4be806ed576620580765dc929f9d2"
+  "hash": "2f4608fec48dc4421ff0d748768087be58f35c2fc6fa5ec35913a00f5d74f008"
 }
