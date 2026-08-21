@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM servers\n        WHERE NOT (id = ANY($1))\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fcabe99e91c1c038b05d9231b8416ae7dea1e3179e69bb9a13d9b6536ad095b1"
+}

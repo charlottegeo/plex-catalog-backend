@@ -264,8 +264,8 @@ pub async fn get_library_items_total(
     .await
 }
 
-/// Upsert a server row. "status_since" stays the same when the non-online status is unchanged.
-/// "connection_uri" is the URI that successfully connected (or the first remote / empty when none).
+/// Upsert a server. `last_seen` updates only when online (last successful access).
+/// `connection_uri` is the URI that worked (or the first remote / empty when none).
 pub async fn upsert_server(
     pool: &PgPool,
     server: &Device,
@@ -275,20 +275,25 @@ pub async fn upsert_server(
 ) -> Result<(), sqlx::Error> {
     let access_token = server.access_token.as_deref().unwrap_or_default();
     let owner_username = server.source_title.as_deref();
+    let last_seen = if status == 0 { Some(sync_time) } else { None };
+
     sqlx::query!(
         r#"
         INSERT INTO servers (id, name, owner_username, access_token, connection_uri, last_seen, status, status_since)
         VALUES (
             $1, $2, $3, $4, $5, $6, $7,
-            CASE WHEN $7 = 0 THEN NULL ELSE $6 END
+            CASE WHEN $7 = 0 THEN NULL ELSE $8 END
         )
         ON CONFLICT (id) DO UPDATE SET
-            last_seen = EXCLUDED.last_seen,
+            last_seen = CASE
+                WHEN EXCLUDED.status = 0 THEN EXCLUDED.last_seen
+                ELSE servers.last_seen
+            END,
             status = EXCLUDED.status,
             status_since = CASE
                 WHEN EXCLUDED.status = 0 THEN NULL
                 WHEN servers.status = EXCLUDED.status THEN servers.status_since
-                ELSE EXCLUDED.last_seen
+                ELSE $8
             END,
             name = CASE WHEN servers.name IS DISTINCT FROM EXCLUDED.name THEN EXCLUDED.name ELSE servers.name END,
             owner_username = CASE WHEN servers.owner_username IS DISTINCT FROM EXCLUDED.owner_username THEN EXCLUDED.owner_username ELSE servers.owner_username END,
@@ -300,8 +305,9 @@ pub async fn upsert_server(
         owner_username,
         access_token,
         connection_uri,
-        sync_time,
-        status
+        last_seen,
+        status,
+        sync_time
     )
     .execute(pool)
     .await?;
@@ -589,6 +595,7 @@ pub async fn upsert_stream(
 pub async fn prune_old_data(
     pool: &PgPool,
     sync_start_time: DateTime<Utc>,
+    seen_server_ids: &[String],
 ) -> Result<(), sqlx::Error> {
     tracing::debug!("Pruning stale rows...");
     let streams_deleted = sqlx::query!("DELETE FROM streams WHERE last_seen < $1", sync_start_time)
@@ -613,10 +620,16 @@ pub async fn prune_old_data(
     .execute(pool)
     .await?
     .rows_affected();
-    let servers_deleted = sqlx::query!("DELETE FROM servers WHERE last_seen < $1", sync_start_time)
-        .execute(pool)
-        .await?
-        .rows_affected();
+    let servers_deleted = sqlx::query!(
+        r#"
+        DELETE FROM servers
+        WHERE NOT (id = ANY($1))
+        "#,
+        seen_server_ids
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
     tracing::info!(
         servers = servers_deleted,
         libraries = libraries_deleted,

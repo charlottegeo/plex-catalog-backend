@@ -45,11 +45,18 @@ pub struct Device {
     pub connections: Vec<Connection>,
 }
 
-/// Plex server connection URI, and whether it is a local connection
+/// Plex server connection URI and how it can be reached.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Connection {
     pub uri: String,
     pub local: bool,
+    /// Relayed through plex.tv/plex.direct when true
+    #[serde(default)]
+    pub relay: bool,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default, rename = "IPv6")]
+    pub ipv6: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
@@ -251,8 +258,9 @@ pub struct DbServer {
     pub status_since: Option<DateTime<Utc>>,
     pub access_token: String,
     pub connection_uri: String,
-    #[schema(value_type = String)]
-    pub last_seen: DateTime<Utc>,
+    /// Last successful PMS access; null if never reached
+    #[schema(value_type = Option<String>)]
+    pub last_seen: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
@@ -403,6 +411,9 @@ impl From<DbServer> for Device {
             connections: vec![Connection {
                 uri: db_server.connection_uri,
                 local: false,
+                relay: false,
+                protocol: None,
+                ipv6: false,
             }],
         }
     }

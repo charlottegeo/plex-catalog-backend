@@ -81,7 +81,7 @@ impl PlexClient {
 
         let response = self
             .http_client
-            .get("https://plex.tv/api/v2/resources")
+            .get("https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1")
             .header("X-Plex-Product", "Plex Catalog Web")
             .header("X-Plex-Client-Identifier", &self.client_identifier)
             .header("X-Plex-Token", token)

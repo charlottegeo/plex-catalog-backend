@@ -792,6 +792,37 @@ async fn detail_worker(
     }
 }
 
+async fn mark_server_unavailable(
+    db_pool: &sqlx::PgPool,
+    server: &crate::models::Device,
+    status: i16,
+    connection_uri: &str,
+    sync_start_time: chrono::DateTime<chrono::Utc>,
+) {
+    let _ = db::upsert_server(db_pool, server, status, connection_uri, sync_start_time).await;
+}
+
+fn remote_connections_to_try(server: &crate::models::Device) -> Vec<&crate::models::Connection> {
+    let mut remotes: Vec<&crate::models::Connection> =
+        server.connections.iter().filter(|c| !c.local).collect();
+    remotes.sort_by_key(|c| {
+        let https = c
+            .protocol
+            .as_deref()
+            .map(|p| p.eq_ignore_ascii_case("https"))
+            .unwrap_or_else(|| c.uri.starts_with("https://"));
+        match (c.relay, https, c.ipv6) {
+            (false, true, false) => 0,
+            (false, true, true) => 1,
+            (false, false, false) => 2,
+            (false, false, true) => 3,
+            (true, true, _) => 4,
+            (true, false, _) => 5,
+        }
+    });
+    remotes
+}
+
 async fn sync_server(
     state: web::Data<AppState>,
     server: crate::models::Device,
@@ -806,7 +837,7 @@ async fn sync_server(
             reason = "no_token",
             "Server probe failed"
         );
-        let _ = db::upsert_server(
+        mark_server_unavailable(
             &db_pool,
             &server,
             server_status::NO_CONNECTION,
@@ -817,21 +848,15 @@ async fn sync_server(
         return;
     };
 
-    let remote_uris: Vec<&str> = server
-        .connections
-        .iter()
-        .filter(|c| !c.local)
-        .map(|c| c.uri.as_str())
-        .collect();
-
-    if remote_uris.is_empty() {
+    let remotes = remote_connections_to_try(&server);
+    if remotes.is_empty() {
         tracing::warn!(
             server = %server.name,
             status = server_status::NO_CONNECTION,
             reason = "no_remote_uri",
             "Server probe failed"
         );
-        let _ = db::upsert_server(
+        mark_server_unavailable(
             &db_pool,
             &server,
             server_status::NO_CONNECTION,
@@ -844,21 +869,28 @@ async fn sync_server(
 
     // Try every remote URI until libraries load (first success wins).
     let mut library_list = None;
-    let mut working_uri = remote_uris[0];
+    let mut working_uri = remotes[0].uri.as_str();
     let mut last_status = server_status::UNREACHABLE;
 
-    for uri in &remote_uris {
-        match client.get_libraries(uri, token).await {
+    for conn in &remotes {
+        match client.get_libraries(&conn.uri, token).await {
             Ok(list) => {
                 library_list = Some(list);
-                working_uri = uri;
+                working_uri = conn.uri.as_str();
+                tracing::debug!(
+                    server = %server.name,
+                    uri = %conn.uri,
+                    relay = conn.relay,
+                    "Remote probe ok"
+                );
                 break;
             }
             Err(e) => {
                 last_status = server_status::classify_reqwest_error(&e);
                 tracing::debug!(
                     server = %server.name,
-                    uri = %uri,
+                    uri = %conn.uri,
+                    relay = conn.relay,
                     status = last_status,
                     reason = server_status::reason_label(last_status),
                     error = %e,
@@ -873,13 +905,14 @@ async fn sync_server(
             server = %server.name,
             status = last_status,
             reason = server_status::reason_label(last_status),
+            tried = remotes.len(),
             "Server probe failed"
         );
-        let _ = db::upsert_server(
+        mark_server_unavailable(
             &db_pool,
             &server,
             last_status,
-            remote_uris[0],
+            remotes[0].uri.as_str(),
             sync_start_time,
         )
         .await;
@@ -1136,6 +1169,10 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
 
     if let Ok(servers) = client.get_servers().await {
         tracing::info!("Servers to sync count={}", servers.len());
+        let seen_server_ids: Vec<String> = servers
+            .iter()
+            .map(|s| s.client_identifier.clone())
+            .collect();
         stream::iter(servers)
             .for_each_concurrent(1, |server| {
                 sync_server(
@@ -1147,6 +1184,29 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                 )
             })
             .await;
+
+        tracing::info!("Sync ingest done; checking Plex before prune");
+        if let Err(e) = client.check_connectivity().await {
+            tracing::error!(
+                "Plex unreachable before prune; aborting prune error={:?}",
+                e
+            );
+            if let Err(db_err) = db::set_sync_metadata(
+                &db_pool,
+                false,
+                Some("Plex API unreachable - prune aborted to preserve local data"),
+            )
+            .await
+            {
+                tracing::error!("sync_metadata update failed error={:?}", db_err);
+            }
+            return;
+        }
+
+        tracing::info!("Pruning stale rows");
+        if let Err(e) = db::prune_old_data(&db_pool, sync_start_time, &seen_server_ids).await {
+            tracing::error!("Pruning failed error={:?}", e);
+        }
     } else {
         tracing::error!("Plex server list fetch failed");
         let _ = db::set_sync_metadata(
@@ -1156,31 +1216,6 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
         )
         .await;
         return;
-    }
-
-    // Checks if Plex API is reachable before pruning so it doesn't empty the database if
-    // the Plex API is unreachable during a sync.
-    tracing::info!("Sync ingest done; checking Plex before prune");
-    if let Err(e) = client.check_connectivity().await {
-        tracing::error!(
-            "Plex unreachable before prune; aborting prune error={:?}",
-            e
-        );
-        if let Err(db_err) = db::set_sync_metadata(
-            &db_pool,
-            false,
-            Some("Plex API unreachable - prune aborted to preserve local data"),
-        )
-        .await
-        {
-            tracing::error!("sync_metadata update failed error={:?}", db_err);
-        }
-        return;
-    }
-
-    tracing::info!("Pruning stale rows");
-    if let Err(e) = db::prune_old_data(&db_pool, sync_start_time).await {
-        tracing::error!("Pruning failed error={:?}", e);
     }
 
     tracing::info!("Checking media requests");
@@ -1301,7 +1336,11 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
                 .send_fulfilled_ping_body(&subscriber, &body)
                 .await
             {
-                tracing::error!("Fulfilled ping failed for user={} error={:?}", subscriber, e);
+                tracing::error!(
+                    "Fulfilled ping failed for user={} error={:?}",
+                    subscriber,
+                    e
+                );
             }
         }
     } else {
