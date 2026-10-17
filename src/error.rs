@@ -6,6 +6,7 @@ pub enum ApiError {
     PlexRequestFailed(reqwest::Error),
     DbError(sqlx::Error),
     NotFound(String),
+    BadRequest(String),
     #[allow(dead_code)]
     Unauthorized(String),
 }
@@ -28,6 +29,7 @@ impl fmt::Display for ApiError {
             ApiError::PlexRequestFailed(e) => write!(f, "Failed to communicate with Plex: {}", e),
             ApiError::DbError(e) => write!(f, "Database error occurred: {}", e),
             ApiError::NotFound(msg) => write!(f, "{}", msg),
+            ApiError::BadRequest(msg) => write!(f, "{}", msg),
             ApiError::Unauthorized(msg) => write!(f, "{}", msg),
         }
     }
@@ -39,6 +41,7 @@ impl ResponseError for ApiError {
             ApiError::PlexRequestFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::DbError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         }
     }

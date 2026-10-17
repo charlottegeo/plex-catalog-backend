@@ -379,6 +379,25 @@ async fn process_discovery_task(
             match item.item_type.as_str() {
                 "show" => {
                     drop(_permit);
+
+                    pending_work.fetch_add(1, Ordering::Relaxed);
+                    total_tasks_created.fetch_add(1, Ordering::Relaxed);
+                    if detail_sender
+                        .send(DetailTask::SyncItemDetails {
+                            item: item.clone(),
+                            server_uri: server_uri.clone(),
+                            server_token: server_token.clone(),
+                            server_id: server_id.clone(),
+                            sync_time,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        pending_work.fetch_sub(1, Ordering::Relaxed);
+                        total_tasks_created.fetch_sub(1, Ordering::Relaxed);
+                        tracing::error!("Show detail queue send failed");
+                    }
+
                     tokio::time::sleep(Duration::from_millis(100)).await;
 
                     let children_result = state
@@ -588,7 +607,7 @@ async fn process_discovery_task(
                     if !item.media.is_empty() {
                         let streams_processed =
                             process_media_parts(&item, &server_id, sync_time, &state.db_pool).await;
-                        if !streams_processed {
+                        if !streams_processed || item.item_type == "movie" {
                             pending_work.fetch_add(1, Ordering::Relaxed);
                             total_tasks_created.fetch_add(1, Ordering::Relaxed);
                             if detail_sender
@@ -666,6 +685,20 @@ async fn process_detail_task(
                 .get_item_details(&server_uri, &server_token, &item.rating_key)
                 .await
             {
+                if matches!(item.item_type.as_str(), "movie" | "show") {
+                    let genre_names: Vec<String> =
+                        details.genres.iter().map(|g| g.tag.clone()).collect();
+                    if let Err(e) = db::replace_item_genres(
+                        &state.db_pool,
+                        &item.rating_key,
+                        &server_id,
+                        &genre_names,
+                    )
+                    .await
+                    {
+                        tracing::error!("Genre upsert failed item={} error={:?}", item.title, e);
+                    }
+                }
                 for media in &details.media {
                     for part in &media.parts {
                         if db::upsert_media_part(

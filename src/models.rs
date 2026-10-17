@@ -200,6 +200,13 @@ pub struct ItemWithDetails {
     pub originally_available_at: Option<NaiveDate>,
     #[serde(default)]
     pub studio: Option<String>,
+    #[serde(rename = "Genre", default)]
+    pub genres: Vec<Tag>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+pub struct Tag {
+    pub tag: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
@@ -279,6 +286,7 @@ pub struct SearchResult {
     pub server_name: String,
     pub content_rating: Option<String>,
     pub duration: Option<i64>,
+    pub genres: Vec<String>,
     #[allow(dead_code)]
     pub rank: Option<f32>,
 }
@@ -288,6 +296,31 @@ pub struct SearchQuery {
     pub q: String,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CatalogSearchQuery {
+    pub q: Option<String>,
+    pub genre: Option<String>,
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Serialize, FromRow, Debug, Clone, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GenreCount {
+    pub name: String,
+    pub count: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct GenresQuery {
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
 }
 
 #[derive(Serialize, Debug, ToSchema)]
@@ -371,6 +404,7 @@ pub struct MediaDetails {
     pub item_type: String,
     pub content_rating: Option<String>,
     pub duration: Option<i64>,
+    pub genres: Vec<String>,
     pub available_on: Vec<ServerAvailability>,
 }
 

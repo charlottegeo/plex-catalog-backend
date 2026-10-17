@@ -1,5 +1,5 @@
 use crate::models::{
-    DbServer, Device, EpisodeDetails, Item, Library, Media, MediaDetails, MediaRequest,
+    DbServer, Device, EpisodeDetails, GenreCount, Item, Library, Media, MediaDetails, MediaRequest,
     MediaVersion, Part, SearchResult, SeasonSummary, ServerAvailability, Stream, SystemInfo,
 };
 use chrono::{DateTime, Utc};
@@ -630,79 +630,203 @@ pub async fn prune_old_data(
     .execute(pool)
     .await?
     .rows_affected();
+    let genres_deleted = sqlx::query(
+        "DELETE FROM genres g WHERE NOT EXISTS (SELECT 1 FROM item_genres ig WHERE ig.genre_id = g.id)",
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
     tracing::info!(
         servers = servers_deleted,
         libraries = libraries_deleted,
         items = items_deleted,
         parts = parts_deleted,
         streams = streams_deleted,
+        genres = genres_deleted,
         "Pruning complete!"
     );
     Ok(())
 }
 
-pub async fn search_items(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogSort {
+    Relevance,
+    Title,
+    Year,
+    ReleaseDate,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogFilters {
+    pub fts_query: Option<String>,
+    pub genre: Option<String>,
+    pub item_type: Option<String>,
+    pub sort: CatalogSort,
+    pub descending: bool,
+}
+
+pub fn build_fts_query(query: &str) -> Option<String> {
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    if terms.is_empty() {
+        return None;
+    }
+    Some(terms.join(" & ") + ":*")
+}
+
+fn push_catalog_where<'a>(
+    builder: &mut sqlx::QueryBuilder<'a, sqlx::Postgres>,
+    filters: &'a CatalogFilters,
+) {
+    builder.push(" WHERE ");
+    match &filters.item_type {
+        Some(t) => {
+            builder.push("i.item_type = ").push_bind(t);
+        }
+        None => {
+            builder.push("i.item_type IN ('movie', 'show')");
+        }
+    }
+    if let Some(q) = &filters.fts_query {
+        builder
+            .push(" AND i.fts_document @@ to_tsquery('simple', ")
+            .push_bind(q)
+            .push(")");
+    }
+    if let Some(genre) = &filters.genre {
+        builder
+            .push(
+                " AND EXISTS (SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id \
+                 WHERE ig.item_id = i.id AND ig.server_id = i.server_id AND g.name = ",
+            )
+            .push_bind(genre)
+            .push(")");
+    }
+}
+
+pub async fn search_catalog(
     pool: &PgPool,
-    query: &str,
+    filters: &CatalogFilters,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SearchResult>, sqlx::Error> {
-    let fts_query = query
-        .split_whitespace()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>()
-        .join(" & ")
-        + ":*";
-    sqlx::query_as!(
-        SearchResult,
+    let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT
-            i.id as "rating_key!",
+            i.id AS rating_key,
             i.guid,
             i.title, i.summary, i.item_type, i.year, i.thumb_path,
             i.content_rating,
             i.duration,
             i.originally_available_at,
-            s.id as "server_id!",
-            s.name as "server_name!",
-            ts_rank(i.fts_document, to_tsquery('simple', $1)) as rank
-        FROM items i
-        JOIN servers s ON i.server_id = s.id
-        WHERE
-            i.fts_document @@ to_tsquery('simple', $1)
-            AND i.item_type IN ('movie', 'show')
-        ORDER BY rank DESC
-        LIMIT $2 OFFSET $3
+            s.id AS server_id,
+            s.name AS server_name,
+            COALESCE(
+                (SELECT array_agg(g.name ORDER BY g.name)
+                 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+                 WHERE ig.item_id = i.id AND ig.server_id = i.server_id),
+                ARRAY[]::TEXT[]
+            ) AS genres,
         "#,
-        fts_query,
-        limit,
-        offset
-    )
-    .fetch_all(pool)
-    .await
+    );
+    match &filters.fts_query {
+        Some(q) => {
+            builder
+                .push(" ts_rank(i.fts_document, to_tsquery('simple', ")
+                .push_bind(q)
+                .push(")) AS rank");
+        }
+        None => {
+            builder.push(" NULL::real AS rank");
+        }
+    }
+    builder.push(" FROM items i JOIN servers s ON i.server_id = s.id");
+    push_catalog_where(&mut builder, filters);
+
+    let dir = if filters.descending { "DESC" } else { "ASC" };
+    let order = match filters.sort {
+        CatalogSort::Relevance if filters.fts_query.is_some() => {
+            "rank DESC, i.title ASC".to_string()
+        }
+        CatalogSort::Relevance | CatalogSort::Title => format!("i.title {dir}"),
+        CatalogSort::Year => format!("i.year {dir} NULLS LAST, i.title ASC"),
+        CatalogSort::ReleaseDate => {
+            format!("i.originally_available_at {dir} NULLS LAST, i.title ASC")
+        }
+    };
+    builder.push(" ORDER BY ").push(order);
+    builder.push(" LIMIT ").push_bind(limit);
+    builder.push(" OFFSET ").push_bind(offset);
+
+    builder
+        .build_query_as::<SearchResult>()
+        .fetch_all(pool)
+        .await
 }
 
-pub async fn search_items_total(pool: &PgPool, query: &str) -> Result<i64, sqlx::Error> {
-    let fts_query = query
-        .split_whitespace()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>()
-        .join(" & ")
-        + ":*";
+pub async fn search_catalog_total(
+    pool: &PgPool,
+    filters: &CatalogFilters,
+) -> Result<i64, sqlx::Error> {
+    let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM items i");
+    push_catalog_where(&mut builder, filters);
+    builder.build_query_scalar::<i64>().fetch_one(pool).await
+}
 
-    sqlx::query_scalar!(
+pub async fn replace_item_genres(
+    pool: &PgPool,
+    item_id: &str,
+    server_id: &str,
+    names: &[String],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    if !names.is_empty() {
+        sqlx::query(
+            "INSERT INTO genres (name) SELECT UNNEST($1::text[]) ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(names)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("DELETE FROM item_genres WHERE item_id = $1 AND server_id = $2")
+        .bind(item_id)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await?;
+    if !names.is_empty() {
+        sqlx::query(
+            r#"
+            INSERT INTO item_genres (item_id, server_id, genre_id)
+            SELECT $1, $2, id FROM genres WHERE name = ANY($3)
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(item_id)
+        .bind(server_id)
+        .bind(names)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+pub async fn get_all_genres(
+    pool: &PgPool,
+    item_type: Option<&str>,
+) -> Result<Vec<GenreCount>, sqlx::Error> {
+    sqlx::query_as::<_, GenreCount>(
         r#"
-        SELECT COUNT(*) as "count!"
-        FROM items i
-        WHERE
-            i.fts_document @@ to_tsquery('simple', $1)
-            AND i.item_type IN ('movie', 'show')
+        SELECT g.name, COUNT(DISTINCT i.guid) AS count
+        FROM genres g
+        JOIN item_genres ig ON ig.genre_id = g.id
+        JOIN items i ON i.id = ig.item_id AND i.server_id = ig.server_id
+        WHERE i.item_type IN ('movie', 'show')
+          AND ($1::text IS NULL OR i.item_type = $1)
+        GROUP BY g.name
+        ORDER BY g.name ASC
         "#,
-        fts_query
     )
-    .fetch_one(pool)
+    .bind(item_type)
+    .fetch_all(pool)
     .await
 }
 
@@ -756,6 +880,20 @@ pub async fn get_details_by_guid(
     .fetch_all(pool)
     .await?;
 
+    let genres: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT DISTINCT g.name
+        FROM item_genres ig
+        JOIN genres g ON g.id = ig.genre_id
+        JOIN items i ON i.id = ig.item_id AND i.server_id = ig.server_id
+        WHERE i.guid = $1
+        ORDER BY g.name
+        "#,
+    )
+    .bind(normalized)
+    .fetch_all(pool)
+    .await?;
+
     let mut available_on: Vec<ServerAvailability> = Vec::new();
     for item in &items {
         let mut server_versions: Vec<MediaVersion> = Vec::new();
@@ -804,6 +942,7 @@ pub async fn get_details_by_guid(
         item_type: first_item.item_type.clone(),
         content_rating: first_item.content_rating.clone(),
         duration: first_item.duration,
+        genres,
         available_on,
     }))
 }

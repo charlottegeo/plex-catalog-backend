@@ -4,9 +4,9 @@ use crate::{
     db,
     error::ApiError,
     models::{
-        DbServer, DiscoverResultsPage, GlobalImageQuery, ImageQuery, LibraryItemsPage,
-        LibraryItemsQuery, MediaRequest, MediaRequestPayload, RequestsQuery, SearchQuery,
-        SearchResultsPage,
+        CatalogSearchQuery, DbServer, DiscoverResultsPage, GenreCount, GenresQuery,
+        GlobalImageQuery, ImageQuery, LibraryItemsPage, LibraryItemsQuery, MediaRequest,
+        MediaRequestPayload, RequestsQuery, SearchQuery, SearchResultsPage,
     },
     AppState,
 };
@@ -38,6 +38,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(get_image_handler)
             .service(get_global_image_handler)
             .service(search_handler)
+            .service(get_genres_handler)
             .service(discover_handler)
             .service(discover_item_handler)
             .service(create_request_handler)
@@ -688,28 +689,116 @@ async fn unsubscribe_request_handler(
     Ok(HttpResponse::Ok().finish())
 }
 
-/// Full-text search over the catalog.
+/// List all genres in the catalog.
 ///
-/// Searches movies and shows by title/summary. Returns matching items with server and metadata from the catalog.
+/// Returns every genre used by at least one movie or show, with the number of distinct titles that have it.
+#[utoipa::path(
+    get,
+    path = "/api/genres",
+    params(("type" = Option<String>, Query, description = "Only count titles of this type: movie | show")),
+    responses(
+        (status = 200, description = "List of genres", body = Vec<GenreCount>),
+        (status = 400, description = "Invalid type")
+    )
+)]
+#[get("/genres")]
+async fn get_genres_handler(
+    state: web::Data<AppState>,
+    query: web::Query<GenresQuery>,
+) -> Result<impl Responder, ApiError> {
+    let item_type = parse_item_type(query.item_type.as_deref())?;
+    let genres = db::get_all_genres(&state.db_pool, item_type.as_deref()).await?;
+    Ok(HttpResponse::Ok().json(genres))
+}
+
+fn parse_item_type(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(t @ ("movie" | "show")) => Ok(Some(t.to_string())),
+        Some(_) => Err(ApiError::BadRequest(
+            "type must be 'movie' or 'show'".to_string(),
+        )),
+    }
+}
+
+/// Search and browse the catalog.
+///
+/// Full-text search over movies and shows, optionally filtered by genre and type and sorted. At least one of "q" or "genre" is required.
 #[utoipa::path(
     get,
     path = "/api/search",
     params(
-        ("q" = String, Query, description = "Search terms (full-text; multiple words supported)"),
+        ("q" = Option<String>, Query, description = "Search terms (full-text; multiple words supported)"),
+        ("genre" = Option<String>, Query, description = "Only return titles with this genre (exact name from /api/genres)"),
+        ("type" = Option<String>, Query, description = "movie | show (default both)"),
+        ("sort" = Option<String>, Query, description = "relevance | title | year | releaseDate (default relevance when q is set, otherwise title)"),
+        ("order" = Option<String>, Query, description = "asc | desc (default asc; ignored for relevance)"),
         ("limit" = Option<u32>, Query, description = "Max results to return"),
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
-    responses((status = 200, description = "Paginated search results", body = SearchResultsPage))
+    responses(
+        (status = 200, description = "Paginated search results", body = SearchResultsPage),
+        (status = 400, description = "Missing q/genre or invalid parameter")
+    )
 )]
 #[get("/search")]
 async fn search_handler(
     state: web::Data<AppState>,
-    query: web::Query<SearchQuery>,
+    query: web::Query<CatalogSearchQuery>,
 ) -> Result<impl Responder, ApiError> {
     let limit = query.limit.unwrap_or(50) as i64;
     let offset = query.offset.unwrap_or(0) as i64;
-    let total = db::search_items_total(&state.db_pool, &query.q).await?;
-    let items = db::search_items(&state.db_pool, &query.q, limit, offset).await?;
+
+    let fts_query = query.q.as_deref().and_then(db::build_fts_query);
+    let genre = query
+        .genre
+        .as_deref()
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(String::from);
+    if fts_query.is_none() && genre.is_none() {
+        return Err(ApiError::BadRequest(
+            "At least one of q or genre is required".to_string(),
+        ));
+    }
+
+    let sort = match query.sort.as_deref() {
+        None | Some("") => {
+            if fts_query.is_some() {
+                db::CatalogSort::Relevance
+            } else {
+                db::CatalogSort::Title
+            }
+        }
+        Some("relevance") => db::CatalogSort::Relevance,
+        Some("title") => db::CatalogSort::Title,
+        Some("year") => db::CatalogSort::Year,
+        Some("releaseDate") => db::CatalogSort::ReleaseDate,
+        Some(_) => {
+            return Err(ApiError::BadRequest(
+                "sort must be relevance, title, year, or releaseDate".to_string(),
+            ))
+        }
+    };
+    let descending = match query.order.as_deref() {
+        None | Some("") | Some("asc") => false,
+        Some("desc") => true,
+        Some(_) => {
+            return Err(ApiError::BadRequest(
+                "order must be asc or desc".to_string(),
+            ))
+        }
+    };
+
+    let filters = db::CatalogFilters {
+        fts_query,
+        genre,
+        item_type: parse_item_type(query.item_type.as_deref())?,
+        sort,
+        descending,
+    };
+    let total = db::search_catalog_total(&state.db_pool, &filters).await?;
+    let items = db::search_catalog(&state.db_pool, &filters, limit, offset).await?;
     Ok(HttpResponse::Ok().json(SearchResultsPage {
         total,
         limit,
