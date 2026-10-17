@@ -105,18 +105,23 @@ async fn get_libraries_handler(
 
 /// List top-level items in a library.
 ///
-/// Returns movies and shows in the given library section. Use children or details endpoints to get more information.
+/// Returns movies and shows in the given library section, optionally filtered by genre and type and sorted. Use children or details endpoints to get more information.
 #[utoipa::path(
     get,
     path = "/api/servers/{server_id}/libraries/{library_key}",
     params(
         ("server_id" = String, Path, description = "Server ID (Plex client identifier)"),
         ("library_key" = String, Path, description = "Library section key from /libraries"),
+        ("genre" = Option<String>, Query, description = "Only return titles with this genre (exact name from /api/genres)"),
+        ("type" = Option<String>, Query, description = "movie | show (default both)"),
+        ("sort" = Option<String>, Query, description = "title | year | releaseDate | duration (default title)"),
+        ("order" = Option<String>, Query, description = "asc | desc (default asc)"),
         ("limit" = Option<u32>, Query, description = "Max results to return"),
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
     ),
     responses(
         (status = 200, description = "Paginated library items", body = LibraryItemsPage),
+        (status = 400, description = "Invalid parameter"),
         (status = 404, description = "Server not found")
     )
 )]
@@ -129,9 +134,17 @@ async fn get_library_items_handler(
     let (server_id, library_key) = path.into_inner();
     let limit = query.limit.unwrap_or(50) as i64;
     let offset = query.offset.unwrap_or(0) as i64;
-    let total = db::get_library_items_total(&state.db_pool, &server_id, &library_key).await?;
-    let items =
-        db::get_library_items(&state.db_pool, &server_id, &library_key, limit, offset).await?;
+    let filters = db::CatalogFilters {
+        fts_query: None,
+        genre: parse_genre(query.genre.as_deref()),
+        item_type: parse_item_type(query.item_type.as_deref())?,
+        sort: parse_sort(query.sort.as_deref(), false)?,
+        descending: parse_order(query.order.as_deref())?,
+        server_id: Some(server_id),
+        library_id: Some(library_key),
+    };
+    let total = db::get_library_items_total(&state.db_pool, &filters).await?;
+    let items = db::get_library_items(&state.db_pool, &filters, limit, offset).await?;
     Ok(HttpResponse::Ok().json(LibraryItemsPage {
         total,
         limit,
@@ -707,8 +720,52 @@ async fn get_genres_handler(
     query: web::Query<GenresQuery>,
 ) -> Result<impl Responder, ApiError> {
     let item_type = parse_item_type(query.item_type.as_deref())?;
-    let genres = db::get_all_genres(&state.db_pool, item_type.as_deref()).await?;
-    Ok(HttpResponse::Ok().json(genres))
+    let cache_key = item_type.clone().unwrap_or_else(|| "all".to_string());
+    let genres = match state.genre_cache.get(&cache_key).await {
+        Some(cached) => cached,
+        None => {
+            let fresh = db::get_all_genres(&state.db_pool, item_type.as_deref()).await?;
+            state.genre_cache.insert(cache_key, fresh.clone()).await;
+            fresh
+        }
+    };
+    Ok(HttpResponse::Ok()
+        .insert_header(header::CacheControl(vec![
+            header::CacheDirective::Private,
+            header::CacheDirective::MaxAge(300u32),
+        ]))
+        .json(genres))
+}
+
+fn parse_sort(raw: Option<&str>, has_text_query: bool) -> Result<db::CatalogSort, ApiError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None if has_text_query => Ok(db::CatalogSort::Relevance),
+        None => Ok(db::CatalogSort::Title),
+        Some("relevance") => Ok(db::CatalogSort::Relevance),
+        Some("title") => Ok(db::CatalogSort::Title),
+        Some("year") => Ok(db::CatalogSort::Year),
+        Some("releaseDate") => Ok(db::CatalogSort::ReleaseDate),
+        Some("duration") => Ok(db::CatalogSort::Duration),
+        Some(_) => Err(ApiError::BadRequest(
+            "sort must be relevance, title, year, releaseDate, or duration".to_string(),
+        )),
+    }
+}
+
+fn parse_order(raw: Option<&str>) -> Result<bool, ApiError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None | Some("asc") => Ok(false),
+        Some("desc") => Ok(true),
+        Some(_) => Err(ApiError::BadRequest(
+            "order must be asc or desc".to_string(),
+        )),
+    }
+}
+
+fn parse_genre(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(String::from)
 }
 
 fn parse_item_type(raw: Option<&str>) -> Result<Option<String>, ApiError> {
@@ -731,7 +788,7 @@ fn parse_item_type(raw: Option<&str>) -> Result<Option<String>, ApiError> {
         ("q" = Option<String>, Query, description = "Search terms (full-text; multiple words supported)"),
         ("genre" = Option<String>, Query, description = "Only return titles with this genre (exact name from /api/genres)"),
         ("type" = Option<String>, Query, description = "movie | show (default both)"),
-        ("sort" = Option<String>, Query, description = "relevance | title | year | releaseDate (default relevance when q is set, otherwise title)"),
+        ("sort" = Option<String>, Query, description = "relevance | title | year | releaseDate | duration (default relevance when q is set, otherwise title)"),
         ("order" = Option<String>, Query, description = "asc | desc (default asc; ignored for relevance)"),
         ("limit" = Option<u32>, Query, description = "Max results to return"),
         ("offset" = Option<u32>, Query, description = "Result offset (for pagination/infinite scroll)")
@@ -750,45 +807,15 @@ async fn search_handler(
     let offset = query.offset.unwrap_or(0) as i64;
 
     let fts_query = query.q.as_deref().and_then(db::build_fts_query);
-    let genre = query
-        .genre
-        .as_deref()
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
-        .map(String::from);
+    let genre = parse_genre(query.genre.as_deref());
     if fts_query.is_none() && genre.is_none() {
         return Err(ApiError::BadRequest(
             "At least one of q or genre is required".to_string(),
         ));
     }
 
-    let sort = match query.sort.as_deref() {
-        None | Some("") => {
-            if fts_query.is_some() {
-                db::CatalogSort::Relevance
-            } else {
-                db::CatalogSort::Title
-            }
-        }
-        Some("relevance") => db::CatalogSort::Relevance,
-        Some("title") => db::CatalogSort::Title,
-        Some("year") => db::CatalogSort::Year,
-        Some("releaseDate") => db::CatalogSort::ReleaseDate,
-        Some(_) => {
-            return Err(ApiError::BadRequest(
-                "sort must be relevance, title, year, or releaseDate".to_string(),
-            ))
-        }
-    };
-    let descending = match query.order.as_deref() {
-        None | Some("") | Some("asc") => false,
-        Some("desc") => true,
-        Some(_) => {
-            return Err(ApiError::BadRequest(
-                "order must be asc or desc".to_string(),
-            ))
-        }
-    };
+    let sort = parse_sort(query.sort.as_deref(), fts_query.is_some())?;
+    let descending = parse_order(query.order.as_deref())?;
 
     let filters = db::CatalogFilters {
         fts_query,
@@ -796,6 +823,8 @@ async fn search_handler(
         item_type: parse_item_type(query.item_type.as_deref())?,
         sort,
         descending,
+        server_id: None,
+        library_id: None,
     };
     let total = db::search_catalog_total(&state.db_pool, &filters).await?;
     let items = db::search_catalog(&state.db_pool, &filters, limit, offset).await?;

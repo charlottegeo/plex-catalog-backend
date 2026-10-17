@@ -134,6 +134,8 @@ pub struct Item {
     /// Plex extra type (e.g. "trailer", "behindTheScenes") when item_type is "extra"
     #[serde(rename = "extraType", default)]
     pub extra_type: Option<String>,
+    #[serde(default, skip_deserializing)]
+    pub genres: Vec<String>,
 }
 
 /// Single bonus feature/extra from the database
@@ -344,6 +346,14 @@ pub struct DiscoverResultsPage {
 
 #[derive(Deserialize, ToSchema)]
 pub struct LibraryItemsQuery {
+    pub genre: Option<String>,
+    /// "movie" or "show"
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    /// "title" | "year" | "releaseDate" | "duration"
+    pub sort: Option<String>,
+    /// "asc" | "desc"
+    pub order: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }

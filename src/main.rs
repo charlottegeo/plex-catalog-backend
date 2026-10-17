@@ -1,4 +1,4 @@
-use crate::models::CachedImage;
+use crate::models::{CachedImage, GenreCount};
 use crate::plex_client::PlexClient;
 use actix_web::{web, App, HttpServer};
 use moka::future::Cache;
@@ -112,6 +112,7 @@ pub struct AppState {
     pub plex_client: PlexClient,
     pub db_pool: sqlx::PgPool,
     pub image_cache: Cache<String, CachedImage>,
+    pub genre_cache: Cache<String, Vec<GenreCount>>,
     pub sync_semaphore: Arc<Semaphore>,
     pub oidc_client: oidc_client::OidcClient,
     pub ping_client: pings::PingClient,
@@ -163,6 +164,10 @@ async fn main() -> std::io::Result<()> {
             .max_capacity(256 * 1024 * 1024)
             .weigher(|_key, value: &CachedImage| -> u32 { value.bytes.len() as u32 })
             .time_to_live(Duration::from_secs(12 * 60 * 60))
+            .build(),
+        genre_cache: Cache::builder()
+            .max_capacity(3)
+            .time_to_live(Duration::from_secs(5 * 60))
             .build(),
         sync_semaphore: Arc::new(Semaphore::new(5)),
         oidc_client,

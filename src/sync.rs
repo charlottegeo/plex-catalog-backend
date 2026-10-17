@@ -220,6 +220,7 @@ async fn sync_extras_for_parent(
                 originally_available_at: None,
                 studio: None,
                 extra_type: e.extra_type,
+                genres: vec![],
             };
             db::ItemWithContext {
                 item,
@@ -1383,6 +1384,7 @@ async fn run_database_sync(app_state: &web::Data<AppState>) {
     if let Err(e) = db::update_sync_metadata_last_updated(&db_pool).await {
         tracing::error!("sync_metadata update failed error={:?}", e);
     }
+    app_state.genre_cache.invalidate_all();
 
     let duration = start_instant.elapsed();
     tracing::info!(

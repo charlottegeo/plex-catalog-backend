@@ -157,12 +157,11 @@ pub async fn get_server_libraries(
 
 pub async fn get_library_items(
     pool: &PgPool,
-    server_id: &str,
-    library_id: &str,
+    filters: &CatalogFilters,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Item>, sqlx::Error> {
-    sqlx::query(
+    let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
         r#"
         SELECT
             i.id,
@@ -192,76 +191,72 @@ pub async fn get_library_items(
                  WHEN mp.video_resolution ILIKE '%480%' THEN 1
                  ELSE 0
              END DESC
-             LIMIT 1) AS best_resolution
+             LIMIT 1) AS best_resolution,
+            COALESCE(
+                (SELECT array_agg(g.name ORDER BY g.name)
+                 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+                 WHERE ig.item_id = i.id AND ig.server_id = i.server_id),
+                ARRAY[]::TEXT[]
+            ) AS genres
         FROM items i
-        WHERE i.server_id = $1 AND i.library_id = $2 AND i.item_type IN ('movie', 'show')
-        ORDER BY i.title ASC
-        LIMIT $3 OFFSET $4
         "#,
-    )
-    .bind(server_id)
-    .bind(library_id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|row| {
-        use sqlx::Row;
-        let id: String = row.try_get("id")?;
-        let best_resolution: Option<String> = row.try_get("best_resolution").ok().flatten();
-        let media = best_resolution
-            .map(|r| {
-                vec![Media {
-                    video_resolution: Some(r),
-                    parts: vec![],
-                }]
+    );
+    push_catalog_where(&mut builder, filters);
+    push_catalog_order(&mut builder, filters);
+    builder.push(" LIMIT ").push_bind(limit);
+    builder.push(" OFFSET ").push_bind(offset);
+
+    builder
+        .build()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            use sqlx::Row;
+            let id: String = row.try_get("id")?;
+            let best_resolution: Option<String> = row.try_get("best_resolution").ok().flatten();
+            let media = best_resolution
+                .map(|r| {
+                    vec![Media {
+                        video_resolution: Some(r),
+                        parts: vec![],
+                    }]
+                })
+                .unwrap_or_default();
+            Ok(Item {
+                guid: row.try_get("guid")?,
+                rating_key: id.clone(),
+                key: format!("/library/metadata/{}", id),
+                parent_id: row.try_get("parent_id")?,
+                title: row.try_get("title")?,
+                summary: row.try_get("summary")?,
+                item_type: row.try_get("item_type")?,
+                year: row.try_get::<i16, _>("year").unwrap_or(0) as u16,
+                media,
+                thumb: row.try_get("thumb_path")?,
+                extra_type: row.try_get("extra_type").ok().flatten(),
+                art: row.try_get("art_path")?,
+                index: row.try_get("index")?,
+                leaf_count: row.try_get("leaf_count")?,
+                updated_at: row.try_get("updated_at")?,
+                content_rating: row.try_get("content_rating")?,
+                duration: row.try_get("duration")?,
+                originally_available_at: row
+                    .try_get::<Option<chrono::NaiveDate>, _>("originally_available_at")
+                    .ok()
+                    .flatten(),
+                studio: row.try_get("studio")?,
+                genres: row.try_get("genres")?,
             })
-            .unwrap_or_default();
-        Ok(Item {
-            guid: row.try_get("guid")?,
-            rating_key: id.clone(),
-            key: format!("/library/metadata/{}", id),
-            parent_id: row.try_get("parent_id")?,
-            title: row.try_get("title")?,
-            summary: row.try_get("summary")?,
-            item_type: row.try_get("item_type")?,
-            year: row.try_get::<i16, _>("year").unwrap_or(0) as u16,
-            media,
-            thumb: row.try_get("thumb_path")?,
-            extra_type: row.try_get("extra_type").ok().flatten(),
-            art: row.try_get("art_path")?,
-            index: row.try_get("index")?,
-            leaf_count: row.try_get("leaf_count")?,
-            updated_at: row.try_get("updated_at")?,
-            content_rating: row.try_get("content_rating")?,
-            duration: row.try_get("duration")?,
-            originally_available_at: row
-                .try_get::<Option<chrono::NaiveDate>, _>("originally_available_at")
-                .ok()
-                .flatten(),
-            studio: row.try_get("studio")?,
         })
-    })
-    .collect()
+        .collect()
 }
 
 pub async fn get_library_items_total(
     pool: &PgPool,
-    server_id: &str,
-    library_id: &str,
+    filters: &CatalogFilters,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"
-        SELECT COUNT(*) as "count!"
-        FROM items
-        WHERE server_id = $1 AND library_id = $2 AND item_type IN ('movie', 'show')
-        "#,
-        server_id,
-        library_id
-    )
-    .fetch_one(pool)
-    .await
+    search_catalog_total(pool, filters).await
 }
 
 /// Upsert a server. `last_seen` updates only when online (last successful access).
@@ -654,6 +649,7 @@ pub enum CatalogSort {
     Title,
     Year,
     ReleaseDate,
+    Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -663,6 +659,8 @@ pub struct CatalogFilters {
     pub item_type: Option<String>,
     pub sort: CatalogSort,
     pub descending: bool,
+    pub server_id: Option<String>,
+    pub library_id: Option<String>,
 }
 
 pub fn build_fts_query(query: &str) -> Option<String> {
@@ -701,6 +699,31 @@ fn push_catalog_where<'a>(
             .push_bind(genre)
             .push(")");
     }
+    if let Some(server_id) = &filters.server_id {
+        builder.push(" AND i.server_id = ").push_bind(server_id);
+    }
+    if let Some(library_id) = &filters.library_id {
+        builder.push(" AND i.library_id = ").push_bind(library_id);
+    }
+}
+
+fn push_catalog_order(
+    builder: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+    filters: &CatalogFilters,
+) {
+    let dir = if filters.descending { "DESC" } else { "ASC" };
+    let order = match filters.sort {
+        CatalogSort::Relevance if filters.fts_query.is_some() => {
+            "rank DESC, i.title ASC".to_string()
+        }
+        CatalogSort::Relevance | CatalogSort::Title => format!("i.title {dir}"),
+        CatalogSort::Year => format!("i.year {dir} NULLS LAST, i.title ASC"),
+        CatalogSort::ReleaseDate => {
+            format!("i.originally_available_at {dir} NULLS LAST, i.title ASC")
+        }
+        CatalogSort::Duration => format!("i.duration {dir} NULLS LAST, i.title ASC"),
+    };
+    builder.push(" ORDER BY ").push(order);
 }
 
 pub async fn search_catalog(
@@ -741,19 +764,7 @@ pub async fn search_catalog(
     }
     builder.push(" FROM items i JOIN servers s ON i.server_id = s.id");
     push_catalog_where(&mut builder, filters);
-
-    let dir = if filters.descending { "DESC" } else { "ASC" };
-    let order = match filters.sort {
-        CatalogSort::Relevance if filters.fts_query.is_some() => {
-            "rank DESC, i.title ASC".to_string()
-        }
-        CatalogSort::Relevance | CatalogSort::Title => format!("i.title {dir}"),
-        CatalogSort::Year => format!("i.year {dir} NULLS LAST, i.title ASC"),
-        CatalogSort::ReleaseDate => {
-            format!("i.originally_available_at {dir} NULLS LAST, i.title ASC")
-        }
-    };
-    builder.push(" ORDER BY ").push(order);
+    push_catalog_order(&mut builder, filters);
     builder.push(" LIMIT ").push_bind(limit);
     builder.push(" OFFSET ").push_bind(offset);
 
