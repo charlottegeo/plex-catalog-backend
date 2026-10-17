@@ -781,6 +781,7 @@ fn parse_item_type(raw: Option<&str>) -> Result<Option<String>, ApiError> {
 /// Search and browse the catalog.
 ///
 /// Full-text search over movies and shows, optionally filtered by genre and type and sorted. At least one of "q" or "genre" is required.
+/// The response's "genres" lists every genre present across all matching results (ignoring the genre filter)
 #[utoipa::path(
     get,
     path = "/api/search",
@@ -826,13 +827,17 @@ async fn search_handler(
         server_id: None,
         library_id: None,
     };
-    let total = db::search_catalog_total(&state.db_pool, &filters).await?;
-    let items = db::search_catalog(&state.db_pool, &filters, limit, offset).await?;
+    let (total, items, genres) = tokio::try_join!(
+        db::search_catalog_total(&state.db_pool, &filters),
+        db::search_catalog(&state.db_pool, &filters, limit, offset),
+        db::catalog_genre_facets(&state.db_pool, &filters),
+    )?;
     Ok(HttpResponse::Ok().json(SearchResultsPage {
         total,
         limit,
         offset,
         items,
+        genres,
     }))
 }
 

@@ -332,6 +332,7 @@ pub struct SearchResultsPage {
     pub limit: i64,
     pub offset: i64,
     pub items: Vec<SearchResult>,
+    pub genres: Vec<GenreCount>,
 }
 
 #[derive(Serialize, Debug, ToSchema)]

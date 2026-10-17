@@ -783,6 +783,27 @@ pub async fn search_catalog_total(
     builder.build_query_scalar::<i64>().fetch_one(pool).await
 }
 
+pub async fn catalog_genre_facets(
+    pool: &PgPool,
+    filters: &CatalogFilters,
+) -> Result<Vec<GenreCount>, sqlx::Error> {
+    let without_genre = CatalogFilters {
+        genre: None,
+        ..filters.clone()
+    };
+    let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+        r#"
+        SELECT g.name, COUNT(DISTINCT i.guid) AS count
+        FROM items i
+        JOIN item_genres ig ON ig.item_id = i.id AND ig.server_id = i.server_id
+        JOIN genres g ON g.id = ig.genre_id
+        "#,
+    );
+    push_catalog_where(&mut builder, &without_genre);
+    builder.push(" GROUP BY g.name ORDER BY g.name ASC");
+    builder.build_query_as::<GenreCount>().fetch_all(pool).await
+}
+
 pub async fn replace_item_genres(
     pool: &PgPool,
     item_id: &str,
